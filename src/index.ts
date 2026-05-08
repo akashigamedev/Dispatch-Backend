@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import './env.js' // validate env first — exits on invalid config
 import { createServer } from './api/server.js'
 import { env } from './env.js'
