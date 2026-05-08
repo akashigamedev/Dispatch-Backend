@@ -3,30 +3,27 @@ import { db, tasks, taskLogs } from '../db/index.js'
 import { log } from '../log.js'
 
 export async function runWorkerTick(userId: string): Promise<void> {
-  // Dequeue the highest-priority queued task for this user.
-  const [task] = await db
+  // Stub drains all queued tasks per tick. Real M6 worker processes one at a time.
+  const queued = await db
     .select({ id: tasks.id, title: tasks.title })
     .from(tasks)
     .where(and(eq(tasks.user_id, userId), eq(tasks.status, 'queued')))
-    .orderBy(
-      asc(tasks.manual_order),
-      asc(tasks.priority),
-      asc(tasks.enqueued_at),
-    )
-    .limit(1)
+    .orderBy(asc(tasks.manual_order), asc(tasks.priority), asc(tasks.enqueued_at))
 
-  if (!task) return
+  if (queued.length === 0) return
 
-  log.info({ taskId: task.id, title: task.title }, '[worker stub] would process task — marking done')
+  log.info({ count: queued.length }, '[worker stub] draining queued tasks')
 
-  await db
-    .update(tasks)
-    .set({ status: 'done', started_at: new Date(), finished_at: new Date() })
-    .where(eq(tasks.id, task.id))
+  for (const task of queued) {
+    await db
+      .update(tasks)
+      .set({ status: 'done', started_at: new Date(), finished_at: new Date() })
+      .where(eq(tasks.id, task.id))
 
-  await db.insert(taskLogs).values({
-    task_id: task.id,
-    level: 'info',
-    message: '[M4 stub] worker ran — real agent coming in M5',
-  })
+    await db.insert(taskLogs).values({
+      task_id: task.id,
+      level: 'info',
+      message: '[stub] worker ran — real agent coming in M6',
+    })
+  }
 }

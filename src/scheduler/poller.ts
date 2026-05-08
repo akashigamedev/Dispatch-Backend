@@ -61,5 +61,9 @@ export async function pollProjects(userId: string): Promise<void> {
       .returning({ id: tasks.id })
     if (result.length > 0) queued++
   }
-  log.info({ found: issues.length, newlyQueued: queued }, 'poll complete')
+  if (queued > 0) {
+    log.info({ found: issues.length, newlyQueued: queued }, 'poll complete — new tasks queued')
+  } else {
+    log.debug({ found: issues.length }, 'poll complete — no new tasks')
+  }
 }
