@@ -40,6 +40,7 @@ async function tick(): Promise<void> {
 }
 
 const TICK_INTERVAL_MS = 2 * 60 * 1000
+tick().catch((err) => log.error({ err }, 'tick error'))
 setInterval(() => {
   tick().catch((err) => log.error({ err }, 'tick error'))
 }, TICK_INTERVAL_MS)
