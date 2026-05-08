@@ -3,6 +3,7 @@ import { notFound, errorHandler } from '../util/errors.js'
 import healthRouter from './routes/health.js'
 import statusRouter from './routes/status.js'
 import tasksRouter from './routes/tasks.js'
+import checkinRouter from './routes/checkin.js'
 
 export function createServer() {
   const app = express()
@@ -12,6 +13,7 @@ export function createServer() {
   app.use(healthRouter)
   app.use(statusRouter)
   app.use(tasksRouter)
+  app.use(checkinRouter)
 
   app.use(notFound)
   app.use(errorHandler)

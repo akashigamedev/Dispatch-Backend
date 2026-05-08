@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm'
-import { db, profiles, repos, tasks } from '../db/index.js'
+import { db, repos, tasks } from '../db/index.js'
 import { fetchAssignedIssues, type DiscoveredIssue } from '../github/projects.js'
 import { log } from '../log.js'
 
@@ -35,39 +35,31 @@ async function findOrCreateRepo(userId: string, issue: DiscoveredIssue): Promise
   return inserted[0]?.id ?? null
 }
 
-export async function pollProjects(): Promise<void> {
-  const users = await db.select().from(profiles)
-
-  for (const user of users) {
-    log.debug({ userId: user.id, login: user.github_login }, 'polling assigned issues')
-    try {
-      const issues = await fetchAssignedIssues()
-      let queued = 0
-      for (const issue of issues) {
-        const repoId = await findOrCreateRepo(user.id, issue)
-        if (!repoId) continue
-        const { size, priority } = parseLabels(issue.labels)
-        const result = await db
-          .insert(tasks)
-          .values({
-            user_id: user.id,
-            repo_id: repoId,
-            github_issue_node_id: issue.nodeId,
-            github_issue_number: issue.number,
-            github_issue_url: issue.url,
-            title: issue.title,
-            body: issue.body,
-            size,
-            priority,
-            status: 'queued',
-          })
-          .onConflictDoNothing()
-          .returning({ id: tasks.id })
-        if (result.length > 0) queued++
-      }
-      log.info({ found: issues.length, newlyQueued: queued }, 'poll complete')
-    } catch (err) {
-      log.error({ err, userId: user.id }, 'poll failed')
-    }
+export async function pollProjects(userId: string): Promise<void> {
+  log.debug({ userId }, 'polling assigned issues')
+  const issues = await fetchAssignedIssues()
+  let queued = 0
+  for (const issue of issues) {
+    const repoId = await findOrCreateRepo(userId, issue)
+    if (!repoId) continue
+    const { size, priority } = parseLabels(issue.labels)
+    const result = await db
+      .insert(tasks)
+      .values({
+        user_id: userId,
+        repo_id: repoId,
+        github_issue_node_id: issue.nodeId,
+        github_issue_number: issue.number,
+        github_issue_url: issue.url,
+        title: issue.title,
+        body: issue.body,
+        size,
+        priority,
+        status: 'queued',
+      })
+      .onConflictDoNothing()
+      .returning({ id: tasks.id })
+    if (result.length > 0) queued++
   }
+  log.info({ found: issues.length, newlyQueued: queued }, 'poll complete')
 }
