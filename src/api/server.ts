@@ -1,6 +1,7 @@
 import express from 'express'
 import { notFound, errorHandler } from '../util/errors.js'
 import healthRouter from './routes/health.js'
+import statusRouter from './routes/status.js'
 
 export function createServer() {
   const app = express()
@@ -8,8 +9,7 @@ export function createServer() {
   app.use(express.json())
 
   app.use(healthRouter)
-
-  // Authenticated routes added in later milestones.
+  app.use(statusRouter)
 
   app.use(notFound)
   app.use(errorHandler)
