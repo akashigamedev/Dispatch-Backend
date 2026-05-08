@@ -1,5 +1,13 @@
 import { getGraphql } from './client.js'
 
+interface ProjectStatusValue {
+  name?: string
+}
+
+interface ProjectItemNode {
+  fieldValueByName?: ProjectStatusValue | null
+}
+
 interface IssueSearchNode {
   id: string
   number: number
@@ -8,6 +16,7 @@ interface IssueSearchNode {
   url: string
   repository: { nameWithOwner: string; databaseId: number }
   labels: { nodes: Array<{ name: string }> }
+  projectItems: { nodes: Array<ProjectItemNode> }
 }
 
 interface IssueSearchResponse {
@@ -26,6 +35,13 @@ const QUERY = `
           id number title body url
           repository { nameWithOwner databaseId }
           labels(first: 20) { nodes { name } }
+          projectItems(first: 10) {
+            nodes {
+              fieldValueByName(name: "Status") {
+                ... on ProjectV2ItemFieldSingleSelectValue { name }
+              }
+            }
+          }
         }
       }
     }
@@ -41,6 +57,17 @@ export interface DiscoveredIssue {
   repoFullName: string
   repoGithubId: number
   labels: string[]
+}
+
+// Terminal Project status values that mean "do not work on this".
+const DONE_STATUSES = new Set(['done', 'completed', 'closed', 'cancelled', 'canceled', 'wontfix'])
+
+function isDoneInAnyProject(node: IssueSearchNode): boolean {
+  for (const item of node.projectItems.nodes) {
+    const status = item.fieldValueByName?.name?.toLowerCase().trim()
+    if (status && DONE_STATUSES.has(status)) return true
+  }
+  return false
 }
 
 function isIssue(node: Partial<IssueSearchNode>): node is IssueSearchNode {
@@ -59,6 +86,7 @@ export async function fetchAssignedIssues(): Promise<DiscoveredIssue[]> {
 
     for (const node of data.search.nodes) {
       if (!isIssue(node)) continue
+      if (isDoneInAnyProject(node)) continue
       discovered.push({
         nodeId: node.id,
         number: node.number,
