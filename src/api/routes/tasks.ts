@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { and, asc, desc, eq, gt, isNull, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, sql } from 'drizzle-orm'
 import { requireAuth } from '../auth.js'
 import { db, tasks, taskLogs } from '../../db/index.js'
 import { AppError } from '../../util/errors.js'
@@ -23,7 +23,7 @@ router.get('/tasks', requireAuth, async (req, res) => {
     .from(tasks)
     .where(where)
     .orderBy(
-      or(isNull(tasks.manual_order), asc(tasks.manual_order))!,
+      sql`${tasks.manual_order} asc nulls last`,
       desc(tasks.priority),
       asc(tasks.size),
       asc(tasks.enqueued_at),

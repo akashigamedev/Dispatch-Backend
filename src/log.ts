@@ -1,9 +1,10 @@
 import pino from 'pino'
-import { env } from './env.js'
+
+const pretty = process.stdout.isTTY
 
 export const log = pino({
-  level: env.NODE_ENV === 'production' ? 'info' : 'debug',
-  ...(env.NODE_ENV !== 'production' && {
+  level: pretty ? 'debug' : 'info',
+  ...(pretty && {
     transport: { target: 'pino-pretty', options: { colorize: true } },
   }),
 })
