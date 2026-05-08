@@ -15,6 +15,8 @@ const schema = z
     GITHUB_APP_CLIENT_SECRET: z.string().min(1).optional(),
     GITHUB_WEBHOOK_SECRET: z.string().min(1).optional(),
 
+    DATABASE_URL: z.string().url(),
+
     ANTHROPIC_API_KEY: z.string().startsWith('sk-ant-'),
 
     PORT: z.coerce.number().int().positive().default(3000),

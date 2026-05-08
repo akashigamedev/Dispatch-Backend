@@ -1,16 +1,15 @@
 import { Router, type Request, type Response } from 'express'
-import { db } from '../../db.js'
+import { db, profiles } from '../../db/index.js'
 
 const router = Router()
 
 router.get('/health', async (_req: Request, res: Response) => {
-  // Verify DB connectivity on every health check.
-  const { error } = await db.from('profiles').select('id').limit(1)
-  if (error) {
-    res.status(503).json({ status: 'degraded', db: error.message })
-    return
+  try {
+    await db.select({ id: profiles.id }).from(profiles).limit(1)
+    res.json({ status: 'ok', ts: new Date().toISOString() })
+  } catch (err) {
+    res.status(503).json({ status: 'degraded', db: String(err) })
   }
-  res.json({ status: 'ok', ts: new Date().toISOString() })
 })
 
 export default router
