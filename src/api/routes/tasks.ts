@@ -7,6 +7,7 @@ import { requestCancel, getCurrentTask } from '../../worker/cancel.js'
 import { runWorkerTick } from '../../scheduler/worker.js'
 import { findOrCreateRepo, parseLabels } from '../../scheduler/poller.js'
 import { AppError } from '../../util/errors.js'
+import { createIssueAndAddToProject } from '../../github/createIssue.js'
 
 const router = Router()
 
@@ -105,6 +106,95 @@ router.post('/tasks/start', requireAuth, async (req, res) => {
   runWorkerTick(userId).catch(() => { /* logged inside worker */ })
 
   res.json({ ok: true, taskId, status: 'queued' })
+})
+
+const fieldValueSchema = z.object({
+  fieldId: z.string().min(1),
+  singleSelectOptionId: z.string().optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  text: z.string().optional(),
+  number: z.number().optional(),
+  iterationId: z.string().optional(),
+}).refine(
+  (v) =>
+    [v.singleSelectOptionId, v.date, v.text, v.number, v.iterationId].filter((x) => x !== undefined)
+      .length === 1,
+  { message: 'each fieldValue must set exactly one of singleSelectOptionId/date/text/number/iterationId' },
+)
+
+const createSchema = z.object({
+  repoFullName: z.string().min(1),
+  title: z.string().min(1),
+  body: z.string().optional().nullable(),
+  projectNodeId: z.string().min(1),
+  fieldValues: z.array(fieldValueSchema).default([]),
+  start: z.boolean().default(false),
+})
+
+router.post('/tasks/create', requireAuth, async (req, res) => {
+  const userId = req.user.id
+  const parsed = createSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() })
+    return
+  }
+  const p = parsed.data
+
+  const [project] = await db
+    .select({ id: githubProjects.id })
+    .from(githubProjects)
+    .where(and(
+      eq(githubProjects.user_id, userId),
+      eq(githubProjects.project_node_id, p.projectNodeId),
+      eq(githubProjects.enabled, true),
+    ))
+  if (!project) throw new AppError(400, 'project is not enabled for this user')
+
+  const created = await createIssueAndAddToProject({
+    repoFullName: p.repoFullName,
+    title: p.title,
+    body: p.body ?? null,
+    projectNodeId: p.projectNodeId,
+    fieldValues: p.fieldValues,
+  })
+
+  const repoId = await findOrCreateRepo(userId, p.repoFullName, created.repoGithubId)
+  if (!repoId) throw new AppError(500, 'failed to create repo')
+
+  if (!p.start) {
+    res.json({
+      ok: true,
+      issueNumber: created.issueNumber,
+      issueUrl: created.issueUrl,
+      taskId: null,
+    })
+    return
+  }
+
+  const [inserted] = await db
+    .insert(tasks)
+    .values({
+      user_id: userId,
+      repo_id: repoId,
+      github_issue_node_id: created.issueNodeId,
+      github_issue_number: created.issueNumber,
+      github_issue_url: created.issueUrl,
+      github_project_node_id: p.projectNodeId,
+      title: p.title,
+      body: p.body ?? null,
+      status: 'queued',
+    })
+    .returning({ id: tasks.id })
+  if (!inserted) throw new AppError(500, 'failed to insert task')
+
+  runWorkerTick(userId).catch(() => { /* logged inside worker */ })
+
+  res.json({
+    ok: true,
+    issueNumber: created.issueNumber,
+    issueUrl: created.issueUrl,
+    taskId: inserted.id,
+  })
 })
 
 router.post('/tasks/:id/cancel', requireAuth, async (req, res) => {
