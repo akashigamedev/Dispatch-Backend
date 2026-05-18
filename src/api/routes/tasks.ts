@@ -10,7 +10,7 @@ import { AppError } from '../../util/errors.js'
 
 const router = Router()
 
-const STARTABLE_STATUSES = ['done', 'failed', 'cancelled', 'awaiting_input'] as const
+const STARTABLE_STATUSES = ['failed', 'cancelled', 'awaiting_input'] as const
 
 const startSchema = z.object({
   issueNodeId: z.string().min(1),
