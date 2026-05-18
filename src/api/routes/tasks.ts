@@ -1,8 +1,8 @@
 import { Router } from 'express'
-import { and, asc, eq, gt, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireAuth } from '../auth.js'
-import { db, githubProjects, tasks, taskLogs } from '../../db/index.js'
+import { db, githubProjects, repos, tasks, taskLogs } from '../../db/index.js'
 import { requestCancel, getCurrentTask } from '../../worker/cancel.js'
 import { runWorkerTick } from '../../scheduler/worker.js'
 import { findOrCreateRepo, parseLabels } from '../../scheduler/poller.js'
@@ -195,6 +195,77 @@ router.post('/tasks/create', requireAuth, async (req, res) => {
     issueUrl: created.issueUrl,
     taskId: inserted.id,
   })
+})
+
+const QUEUED_STATUSES = [
+  'queued',
+  'planning',
+  'awaiting_input',
+  'coding',
+  'verifying',
+  'reviewing',
+  'pushing',
+] as const
+
+const COMPLETED_STATUSES = ['done', 'failed', 'cancelled'] as const
+
+// Lower rank = shown first. Active phases pin to the top of the Queued tab.
+const QUEUED_STATUS_RANK_SQL = sql`case ${tasks.status}
+  when 'planning' then 0
+  when 'coding' then 0
+  when 'verifying' then 0
+  when 'reviewing' then 0
+  when 'pushing' then 0
+  when 'queued' then 1
+  when 'awaiting_input' then 2
+  else 3
+end`
+
+router.get('/tasks', requireAuth, async (req, res) => {
+  const userId = req.user.id
+  const bucket = req.query.bucket === 'completed' ? 'completed' : 'queued'
+
+  const statuses = bucket === 'completed' ? COMPLETED_STATUSES : QUEUED_STATUSES
+
+  const baseSelect = {
+    id: tasks.id,
+    title: tasks.title,
+    status: tasks.status,
+    size: tasks.size,
+    priority: tasks.priority,
+    githubIssueNodeId: tasks.github_issue_node_id,
+    githubIssueNumber: tasks.github_issue_number,
+    githubIssueUrl: tasks.github_issue_url,
+    repoFullName: repos.full_name,
+    prUrl: tasks.pr_url,
+    prNumber: tasks.pr_number,
+    enqueuedAt: tasks.enqueued_at,
+    startedAt: tasks.started_at,
+    finishedAt: tasks.finished_at,
+    failureReason: tasks.failure_reason,
+  }
+
+  const rows = bucket === 'completed'
+    ? await db
+        .select(baseSelect)
+        .from(tasks)
+        .leftJoin(repos, eq(repos.id, tasks.repo_id))
+        .where(and(eq(tasks.user_id, userId), inArray(tasks.status, [...statuses])))
+        .orderBy(desc(tasks.finished_at))
+        .limit(100)
+    : await db
+        .select(baseSelect)
+        .from(tasks)
+        .leftJoin(repos, eq(repos.id, tasks.repo_id))
+        .where(and(eq(tasks.user_id, userId), inArray(tasks.status, [...statuses])))
+        .orderBy(
+          QUEUED_STATUS_RANK_SQL,
+          desc(tasks.priority),
+          asc(sql`${tasks.size} nulls last`),
+          asc(tasks.enqueued_at),
+        )
+
+  res.json({ tasks: rows })
 })
 
 router.post('/tasks/:id/cancel', requireAuth, async (req, res) => {
