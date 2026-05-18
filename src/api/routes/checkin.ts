@@ -2,7 +2,6 @@ import { Router } from 'express'
 import { eq } from 'drizzle-orm'
 import { requireAuth } from '../auth.js'
 import { db, profiles } from '../../db/index.js'
-import { syncProjectsForUser } from '../../github/projectsSync.js'
 import { log } from '../../log.js'
 
 const router = Router()
@@ -17,12 +16,6 @@ router.post('/checkin', requireAuth, async (req, res) => {
     .where(eq(profiles.id, userId))
 
   log.info({ userId }, 'user checked in')
-
-  try {
-    await syncProjectsForUser(userId)
-  } catch (err) {
-    log.error({ err, userId }, 'projects sync failed on checkin')
-  }
 
   res.json({ active: true, checkedInAt: now.toISOString() })
 })

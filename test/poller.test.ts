@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseLabels } from '../src/scheduler/labels.js'
-import { isDoneInAnyProject } from '../src/github/projectStatus.js'
+import { isQueueable } from '../src/github/projectStatus.js'
 
 describe('parseLabels', () => {
   it('returns null size and 0 priority when no relevant labels', () => {
@@ -48,27 +48,30 @@ function makeNode(statuses: (string | undefined)[]) {
   }
 }
 
-describe('isDoneInAnyProject', () => {
+describe('isQueueable', () => {
   it('returns false when no project items', () => {
-    expect(isDoneInAnyProject(makeNode([]) as never)).toBe(false)
+    expect(isQueueable(makeNode([]) as never)).toBe(false)
   })
 
-  it('returns false for non-terminal statuses', () => {
-    expect(isDoneInAnyProject(makeNode(['In Progress', 'Todo', 'Backlog']) as never)).toBe(false)
-  })
-
-  it('returns true for terminal statuses (case-insensitive)', () => {
-    const terminals = ['done', 'Done', 'DONE', 'completed', 'Completed', 'cancelled', 'Canceled', 'wontfix', 'closed']
-    for (const status of terminals) {
-      expect(isDoneInAnyProject(makeNode([status]) as never), status).toBe(true)
+  it('returns true for queueable statuses (case- and space-insensitive)', () => {
+    const queueable = ['Backlog', 'backlog', 'BACKLOG', 'Todo', 'todo', 'To Do', 'TO DO', 'to  do']
+    for (const status of queueable) {
+      expect(isQueueable(makeNode([status]) as never), status).toBe(true)
     }
   })
 
-  it('returns true if any project is terminal even if others are not', () => {
-    expect(isDoneInAnyProject(makeNode(['In Progress', 'done']) as never)).toBe(true)
+  it('returns false for non-queueable statuses', () => {
+    const nonQueueable = ['In Progress', 'Code Review', 'Internal Review', 'QA Testing', 'Done', 'Completed', 'Cancelled']
+    for (const status of nonQueueable) {
+      expect(isQueueable(makeNode([status]) as never), status).toBe(false)
+    }
+  })
+
+  it('returns true if any project item is queueable even if others are not', () => {
+    expect(isQueueable(makeNode(['In Progress', 'Backlog']) as never)).toBe(true)
   })
 
   it('returns false when fieldValueByName is null', () => {
-    expect(isDoneInAnyProject(makeNode([undefined]) as never)).toBe(false)
+    expect(isQueueable(makeNode([undefined]) as never)).toBe(false)
   })
 })

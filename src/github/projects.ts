@@ -1,7 +1,7 @@
 import { getGraphql } from './client.js'
 import { withGithubRetry } from '../util/githubRetry.js'
-import { isDoneInAnyProject } from './projectStatus.js'
-export { isDoneInAnyProject } from './projectStatus.js'
+import { isQueueable } from './projectStatus.js'
+export { isQueueable } from './projectStatus.js'
 
 interface ProjectStatusValue {
   name?: string
@@ -82,7 +82,7 @@ export async function fetchAssignedIssues(): Promise<DiscoveredIssue[]> {
 
     for (const node of data.search.nodes) {
       if (!isIssue(node)) continue
-      if (isDoneInAnyProject(node)) continue
+      if (!isQueueable(node)) continue
       discovered.push({
         nodeId: node.id,
         number: node.number,

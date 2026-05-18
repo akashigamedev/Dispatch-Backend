@@ -3,12 +3,20 @@ import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireAuth } from '../auth.js'
 import { db, githubProjects } from '../../db/index.js'
+import { syncProjectsForUser } from '../../github/projectsSync.js'
 import { AppError } from '../../util/errors.js'
+import { log } from '../../log.js'
 
 const router = Router()
 
 router.get('/projects', requireAuth, async (req, res) => {
   const userId = req.user.id
+
+  try {
+    await syncProjectsForUser(userId)
+  } catch (err) {
+    log.error({ err, userId }, 'projects sync failed')
+  }
 
   const rows = await db
     .select({

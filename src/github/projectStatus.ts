@@ -1,4 +1,4 @@
-export const DONE_STATUSES = new Set(['done', 'completed', 'closed', 'cancelled', 'canceled', 'wontfix'])
+export const QUEUEABLE_STATUSES = new Set(['backlog', 'todo'])
 
 export interface ProjectItemNode {
   fieldValueByName?: { name?: string } | null
@@ -8,10 +8,15 @@ export interface IssueProjectItems {
   projectItems: { nodes: Array<ProjectItemNode> }
 }
 
-export function isDoneInAnyProject(node: IssueProjectItems): boolean {
+function normalize(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, '').trim()
+}
+
+export function isQueueable(node: IssueProjectItems): boolean {
   for (const item of node.projectItems.nodes) {
-    const status = item.fieldValueByName?.name?.toLowerCase().trim()
-    if (status && DONE_STATUSES.has(status)) return true
+    const raw = item.fieldValueByName?.name
+    if (!raw) continue
+    if (QUEUEABLE_STATUSES.has(normalize(raw))) return true
   }
   return false
 }
