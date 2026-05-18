@@ -9,18 +9,6 @@ const planSchema = z.object({
   clarifying_questions: z.array(z.string()).default([]),
 })
 
-const PLAN_JSON_SCHEMA = {
-  type: 'object',
-  properties: {
-    plan_md: { type: 'string' },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
-    files_to_touch: { type: 'array', items: { type: 'string' } },
-    clarifying_questions: { type: 'array', items: { type: 'string' } },
-  },
-  required: ['plan_md', 'confidence', 'files_to_touch', 'clarifying_questions'],
-  additionalProperties: false,
-}
-
 export interface PlanResult {
   plan_md: string
   confidence: number
@@ -73,7 +61,6 @@ export async function planTask(
       'You are a planning subagent invoked by an automated pipeline. Your final message must be a single valid JSON object matching the schema in the user prompt — no prose, no markdown fences, no preamble, no trailing summary. The orchestrator parses this output programmatically.',
     effort,
     outputFormat: 'json',
-    jsonSchema: PLAN_JSON_SCHEMA,
     maxTurns: 30,
   })
 
