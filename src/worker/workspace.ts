@@ -21,6 +21,7 @@ export async function setupWorkspace(
   branchName: string,
 ): Promise<string> {
   const dir = workspacePath(taskId)
+  rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
 
   const cloneUrl = getCloneUrl(repoFullName)
