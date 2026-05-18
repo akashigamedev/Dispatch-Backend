@@ -1,6 +1,5 @@
 import { and, eq } from 'drizzle-orm'
 import { db, profiles, repos, tasks, taskLogs } from '../db/index.js'
-import { addSpend, isBudgetExceeded } from '../scheduler/budget.js'
 import { runCoderLoop } from '../claude/coder.js'
 import { planTask } from '../claude/planner.js'
 import { reviewTask } from '../claude/reviewer.js'
@@ -96,7 +95,6 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     totalIn += planResult.usage.inputTokens
     totalOut += planResult.usage.outputTokens
     totalCost += planResult.usage.costUsd
-    await addSpend(userId, planResult.usage.costUsd)
 
     await db.update(tasks).set({ plan_md: planResult.plan_md }).where(eq(tasks.id, taskId))
     await addLog(taskId, 'claude', `Plan ready — confidence: ${planResult.confidence.toFixed(2)}`)
@@ -120,10 +118,6 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     // ── 3. Code ───────────────────────────────────────────────────────────────
     checkCancel(taskId)
 
-    if (await isBudgetExceeded(userId)) {
-      throw new Error('daily budget exceeded — task halted before coding')
-    }
-
     const coderModelId = models.coder?.id ?? 'claude-sonnet-4-6'
     const coderEffort = toEffort(models.coder?.thinking, 'medium')
 
@@ -137,7 +131,6 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     totalIn += coderResult.usage.inputTokens
     totalOut += coderResult.usage.outputTokens
     totalCost += coderResult.usage.costUsd
-    await addSpend(userId, coderResult.usage.costUsd)
 
     // ── 4. Verify ─────────────────────────────────────────────────────────────
     checkCancel(taskId)
@@ -172,7 +165,6 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       totalIn += fixResult.usage.inputTokens
       totalOut += fixResult.usage.outputTokens
       totalCost += fixResult.usage.costUsd
-      await addSpend(userId, fixResult.usage.costUsd)
 
       await db.update(tasks).set({ status: 'verifying' }).where(eq(tasks.id, taskId))
       verifyResult = runAllVerifySteps(workdir, nightowlConfig)
@@ -187,10 +179,6 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     // ── 5. Review ─────────────────────────────────────────────────────────────
     checkCancel(taskId)
 
-    if (await isBudgetExceeded(userId)) {
-      throw new Error('daily budget exceeded — task halted before review')
-    }
-
     const reviewerModelId = models.reviewer?.id ?? 'claude-opus-4-7'
     const reviewerEffort = toEffort(models.reviewer?.thinking, 'low')
 
@@ -203,7 +191,6 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     totalIn += reviewResult.usage.inputTokens
     totalOut += reviewResult.usage.outputTokens
     totalCost += reviewResult.usage.costUsd
-    await addSpend(userId, reviewResult.usage.costUsd)
 
     await addLog(taskId, 'claude', `Review decision: ${reviewResult.decision} — ${reviewResult.notes}`)
 
@@ -222,7 +209,6 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       totalIn += fixResult.usage.inputTokens
       totalOut += fixResult.usage.outputTokens
       totalCost += fixResult.usage.costUsd
-      await addSpend(userId, fixResult.usage.costUsd)
 
       await db.update(tasks).set({ status: 'verifying' }).where(eq(tasks.id, taskId))
       verifyResult = runAllVerifySteps(workdir, nightowlConfig)

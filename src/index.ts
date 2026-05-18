@@ -9,8 +9,6 @@ import { env } from './env.js'
 import { log } from './log.js'
 import { sizeUnsizedTasks, requeueStaleAwaitingInput } from './scheduler/poller.js'
 import { runWorkerTick } from './scheduler/worker.js'
-import { isWithinWorkWindow } from './scheduler/window.js'
-import { resetBudgetIfNewDay, isBudgetExceeded } from './scheduler/budget.js'
 
 const IN_FLIGHT_STATUSES = ['planning', 'coding', 'verifying', 'reviewing', 'pushing'] as const
 const ACTIONABLE_STATUSES = ['queued', 'awaiting_input', ...IN_FLIGHT_STATUSES] as const
@@ -44,9 +42,6 @@ export async function tick(): Promise<void> {
   const usersWithWork = await db
     .selectDistinct({
       id: profiles.id,
-      work_start_local: profiles.work_start_local,
-      work_end_local: profiles.work_end_local,
-      timezone: profiles.timezone,
       anthropic_resume_after: profiles.anthropic_resume_after,
     })
     .from(profiles)
@@ -54,16 +49,9 @@ export async function tick(): Promise<void> {
     .where(inArray(tasks.status, [...ACTIONABLE_STATUSES]))
 
   for (const user of usersWithWork) {
-    if (!isWithinWorkWindow(user)) continue
     if (user.anthropic_resume_after && user.anthropic_resume_after > new Date()) continue
 
     try {
-      await resetBudgetIfNewDay(user.id)
-      if (await isBudgetExceeded(user.id)) {
-        log.info({ userId: user.id }, 'daily budget exceeded — skipping tick')
-        continue
-      }
-
       await requeueStaleAwaitingInput(user.id)
       await sizeUnsizedTasks(user.id)
       await runWorkerTick(user.id)

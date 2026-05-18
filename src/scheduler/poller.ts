@@ -1,7 +1,6 @@
 import { and, eq, isNull, lt } from 'drizzle-orm'
 import { db, profiles, repos, tasks } from '../db/index.js'
 import { sizeTask } from '../claude/sizer.js'
-import { addSpend } from './budget.js'
 import { detectModelLimit } from '../util/claudeError.js'
 import { log } from '../log.js'
 
@@ -87,8 +86,6 @@ export async function sizeUnsizedTasks(userId: string): Promise<void> {
           tokens_out: usage.outputTokens,
         })
         .where(eq(tasks.id, task.id))
-
-      await addSpend(userId, usage.costUsd)
 
       log.info({ taskId: task.id, size, costUsd: usage.costUsd }, 'task sized')
     } catch (err) {

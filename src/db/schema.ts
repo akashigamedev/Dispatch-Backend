@@ -5,7 +5,6 @@ import {
   text,
   boolean,
   timestamp,
-  time,
   numeric,
   jsonb,
   bigserial,
@@ -37,13 +36,6 @@ export const profiles = pgTable('profiles', {
   github_login: text('github_login').notNull(),
   github_user_id: bigint('github_user_id', { mode: 'number' }).notNull(),
   github_installation_id: bigint('github_installation_id', { mode: 'number' }),
-  work_start_local: time('work_start_local').notNull().default('10:00'),
-  work_end_local: time('work_end_local').notNull().default('19:00'),
-  timezone: text('timezone').notNull().default('Asia/Kolkata'),
-  budget_enabled: boolean('budget_enabled').notNull().default(false),
-  daily_budget_usd: numeric('daily_budget_usd', { precision: 8, scale: 2 }).notNull().default('5.00'),
-  spent_today_usd: numeric('spent_today_usd', { precision: 8, scale: 2 }).notNull().default('0.00'),
-  budget_reset_date: text('budget_reset_date').notNull().default('now()'), // date stored as text for simplicity
   anthropic_resume_after: timestamp('anthropic_resume_after', { withTimezone: true }),
   models: jsonb('models').notNull().default({
     planner: { id: 'claude-opus-4-7', thinking: 'medium' },

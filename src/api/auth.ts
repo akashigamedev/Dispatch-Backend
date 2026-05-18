@@ -32,7 +32,6 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
         id: data.user.id,
         github_login: String(meta.user_name ?? meta.preferred_username ?? ''),
         github_user_id: Number(meta.provider_id ?? meta.sub ?? 0),
-        budget_reset_date: new Date().toISOString().split('T')[0],
       })
       .onConflictDoNothing()
   } catch (err) {
