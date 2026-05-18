@@ -10,11 +10,7 @@ export interface OpenPROptions {
   issueTitle: string
   githubLogin: string
   planMd: string
-  diffSummary: string
   verifyResult: VerifyResult
-  tokensIn: number
-  tokensOut: number
-  costUsd: number
 }
 
 export interface OpenPRResult {
@@ -37,20 +33,10 @@ function buildPRBody(opts: OpenPROptions): string {
     '## Linked issue',
     `Closes #${opts.issueNumber}`,
     '',
-    '## Plan',
     opts.planMd,
-    '',
-    '## Changes',
-    opts.diffSummary || '_no diff stat available_',
     '',
     '## Verification',
     buildVerificationLines(opts.verifyResult),
-    '',
-    '## Skipped / TODO',
-    '- (none)',
-    '',
-    '---',
-    `Tokens: ${opts.tokensIn}/${opts.tokensOut} · Cost: $${opts.costUsd.toFixed(4)}`,
   ].join('\n')
 }
 

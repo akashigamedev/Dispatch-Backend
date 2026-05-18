@@ -259,11 +259,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       issueTitle: task.title,
       githubLogin: profile.github_login,
       planMd: planResult.plan_md,
-      diffSummary,
       verifyResult,
-      tokensIn: totalIn,
-      tokensOut: totalOut,
-      costUsd: totalCost,
     })
 
     await db.update(tasks).set({
