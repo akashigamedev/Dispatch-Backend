@@ -70,7 +70,9 @@ function isIssue(node: Partial<IssueSearchNode>): node is IssueSearchNode {
   return typeof node.number === 'number' && typeof node.id === 'string'
 }
 
-export async function fetchAssignedIssues(): Promise<DiscoveredIssue[]> {
+export async function fetchAssignedIssues(
+  opts: { includeAllStatuses?: boolean } = {},
+): Promise<DiscoveredIssue[]> {
   const graphql = getGraphql()
   const discovered: DiscoveredIssue[] = []
   let cursor: string | null = null
@@ -82,7 +84,7 @@ export async function fetchAssignedIssues(): Promise<DiscoveredIssue[]> {
 
     for (const node of data.search.nodes) {
       if (!isIssue(node)) continue
-      if (!isQueueable(node)) continue
+      if (!opts.includeAllStatuses && !isQueueable(node)) continue
       discovered.push({
         nodeId: node.id,
         number: node.number,

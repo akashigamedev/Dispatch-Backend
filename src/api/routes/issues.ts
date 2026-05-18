@@ -3,6 +3,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { requireAuth } from '../auth.js'
 import { db, githubProjects, tasks } from '../../db/index.js'
 import { fetchAssignedIssues, type DiscoveredIssue } from '../../github/projects.js'
+import { getIssueProjectStatus, setIssueProjectStatus } from '../../github/issueStatus.js'
 import { parseLabels } from '../../scheduler/labels.js'
 import { AppError } from '../../util/errors.js'
 import { log } from '../../log.js'
@@ -145,7 +146,7 @@ router.get('/issues/:nodeId', requireAuth, async (req, res) => {
 
   let issues: DiscoveredIssue[]
   try {
-    issues = await fetchAssignedIssues()
+    issues = await fetchAssignedIssues({ includeAllStatuses: true })
   } catch (err) {
     log.error({ err, userId }, 'fetchAssignedIssues failed')
     throw new AppError(502, 'failed to fetch issues from GitHub')
@@ -161,6 +162,58 @@ router.get('/issues/:nodeId', requireAuth, async (req, res) => {
   const item = toItem(issue, projectNodeId, enabledProjects.get(projectNodeId) ?? null, taskMap.get(issue.nodeId) ?? null)
 
   res.json(item)
+})
+
+router.get('/issues/:nodeId/status-options', requireAuth, async (req, res) => {
+  const userId = req.user.id
+  const issueNodeId = String(req.params.nodeId)
+  const projectNodeId = String(req.query.project ?? '')
+  if (!projectNodeId) throw new AppError(400, 'missing project query parameter')
+
+  const enabledProjects = await getEnabledProjectMap(userId)
+  if (!enabledProjects.has(projectNodeId)) {
+    throw new AppError(404, 'project not enabled for this user')
+  }
+
+  const ctx = await getIssueProjectStatus(issueNodeId, projectNodeId)
+  if (!ctx) throw new AppError(404, 'issue is not on this project or project has no Status field')
+
+  res.json({
+    current: ctx.currentStatus,
+    options: ctx.options.map((o) => o.name),
+  })
+})
+
+router.put('/issues/:nodeId/status', requireAuth, async (req, res) => {
+  const userId = req.user.id
+  const issueNodeId = String(req.params.nodeId)
+  const projectNodeId = String(req.body?.projectNodeId ?? '')
+  const status = String(req.body?.status ?? '')
+  if (!projectNodeId || !status) {
+    throw new AppError(400, 'projectNodeId and status are required')
+  }
+
+  const enabledProjects = await getEnabledProjectMap(userId)
+  if (!enabledProjects.has(projectNodeId)) {
+    throw new AppError(404, 'project not enabled for this user')
+  }
+
+  const ctx = await getIssueProjectStatus(issueNodeId, projectNodeId)
+  if (!ctx) throw new AppError(404, 'issue is not on this project or project has no Status field')
+
+  const option = ctx.options.find(
+    (o) => o.name.toLowerCase() === status.toLowerCase(),
+  )
+  if (!option) throw new AppError(400, `unknown status "${status}" for this project`)
+
+  try {
+    await setIssueProjectStatus(projectNodeId, ctx.projectItemId, ctx.statusFieldId, option.id)
+  } catch (err) {
+    log.error({ err, userId, issueNodeId, status }, 'setIssueProjectStatus failed')
+    throw new AppError(502, 'failed to update issue status on GitHub')
+  }
+
+  res.json({ ok: true, status: option.name })
 })
 
 export default router
