@@ -1,6 +1,5 @@
-import type Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
-import { anthropic, estimateCost, type UsageSummary } from './client.js'
+import { spawnClaude, usageFromResult, type UsageSummary, type ClaudeEffort } from './client.js'
 import { log } from '../log.js'
 
 const reviewSchema = z.object({
@@ -8,27 +7,28 @@ const reviewSchema = z.object({
   notes: z.string(),
 })
 
+const REVIEW_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    decision: { type: 'string', enum: ['ship', 'fix', 'abort'] },
+    notes: { type: 'string' },
+  },
+  required: ['decision', 'notes'],
+  additionalProperties: false,
+}
+
 export interface ReviewResult {
   decision: 'ship' | 'fix' | 'abort'
   notes: string
   usage: UsageSummary
 }
 
-function thinkingBudget(level: string | undefined): number {
-  if (level === 'high') return 16000
-  if (level === 'medium') return 8000
-  if (level === 'low') return 2048
-  return 0
-}
-
 export async function reviewTask(
   planMd: string,
   diff: string,
   modelId = 'claude-opus-4-7',
-  thinkingLevel = 'low',
+  effort: ClaudeEffort = 'low',
 ): Promise<ReviewResult> {
-  const budget = thinkingBudget(thinkingLevel)
-
   const prompt = [
     'You are a code reviewer for an AI coding agent. Given the implementation plan and the resulting git diff, decide whether to ship, fix, or abort.',
     '',
@@ -46,32 +46,23 @@ export async function reviewTask(
     `## Diff\n\`\`\`diff\n${diff.slice(0, 20000)}\n\`\`\``,
   ].join('\n')
 
-  const params: Anthropic.MessageCreateParamsNonStreaming = {
+  const r = await spawnClaude({
+    prompt,
     model: modelId,
-    max_tokens: budget > 0 ? budget + 2048 : 2048,
-    messages: [{ role: 'user', content: prompt }],
-    ...(budget > 0 ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
-  }
+    effort,
+    tools: 'none',
+    outputFormat: 'json',
+    jsonSchema: REVIEW_JSON_SCHEMA,
+  })
 
-  const response = await anthropic.messages.create(params)
-
-  const inputTokens = response.usage.input_tokens
-  const outputTokens = response.usage.output_tokens
-
-  const textBlock = response.content.find((b) => b.type === 'text')
-  const raw = textBlock?.type === 'text' ? textBlock.text.trim() : ''
-
-  let result: z.infer<typeof reviewSchema>
+  let parsed: z.infer<typeof reviewSchema>
   try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/)
-    result = reviewSchema.parse(JSON.parse(jsonMatch?.[0] ?? raw))
+    const jsonMatch = r.result.match(/\{[\s\S]*\}/)
+    parsed = reviewSchema.parse(JSON.parse(jsonMatch?.[0] ?? r.result))
   } catch {
-    log.warn({ raw: raw.slice(0, 500) }, 'reviewer: could not parse JSON — defaulting to ship')
-    result = { decision: 'ship', notes: 'Could not parse reviewer response; defaulting to ship.' }
+    log.warn({ raw: r.result.slice(0, 500) }, 'reviewer: could not parse JSON — defaulting to ship')
+    parsed = { decision: 'ship', notes: 'Could not parse reviewer response; defaulting to ship.' }
   }
 
-  return {
-    ...result,
-    usage: { inputTokens, outputTokens, costUsd: estimateCost(modelId, inputTokens, outputTokens) },
-  }
+  return { ...parsed, usage: usageFromResult(r) }
 }

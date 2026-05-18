@@ -1,5 +1,5 @@
 import { execSync } from 'child_process'
-import { mkdirSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { env } from '../env.js'
 
@@ -38,18 +38,3 @@ export function cleanupWorkspace(taskId: number): void {
   }
 }
 
-export function getRepoTree(workdir: string): string {
-  try {
-    return execSync('git ls-files', { cwd: workdir, stdio: 'pipe' }).toString().trim().slice(0, 8000)
-  } catch {
-    return ''
-  }
-}
-
-export function getClaudeMd(workdir: string): string {
-  try {
-    return readFileSync(join(workdir, 'CLAUDE.md'), 'utf-8').slice(0, 4000)
-  } catch {
-    return ''
-  }
-}

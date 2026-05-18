@@ -1,10 +1,17 @@
 import { z } from 'zod'
-import { anthropic, estimateCost, type UsageSummary } from './client.js'
+import { spawnClaude, usageFromResult, type UsageSummary, type ClaudeEffort } from './client.js'
 import { log } from '../log.js'
 
 export type TaskSize = 'XS' | 'S' | 'M' | 'L' | 'XL'
 
 const sizeSchema = z.object({ size: z.enum(['XS', 'S', 'M', 'L', 'XL']) })
+
+const SIZE_JSON_SCHEMA = {
+  type: 'object',
+  properties: { size: { type: 'string', enum: ['XS', 'S', 'M', 'L', 'XL'] } },
+  required: ['size'],
+  additionalProperties: false,
+}
 
 const PROMPT_PREFIX = [
   'You are sizing a GitHub issue for an AI coding agent.',
@@ -27,27 +34,27 @@ export async function sizeTask(
   title: string,
   body: string | null,
   modelId = 'claude-opus-4-7',
+  effort: ClaudeEffort = 'low',
 ): Promise<SizerResult> {
-  const content = [PROMPT_PREFIX, '', `Issue: ${title}`, body ?? ''].join('\n').trim()
+  const prompt = [PROMPT_PREFIX, '', `Issue: ${title}`, body ?? ''].join('\n').trim()
 
-  const response = await anthropic.messages.create({
+  const r = await spawnClaude({
+    prompt,
     model: modelId,
-    max_tokens: 64,
-    messages: [{ role: 'user', content }],
+    effort,
+    tools: 'none',
+    outputFormat: 'json',
+    jsonSchema: SIZE_JSON_SCHEMA,
   })
 
-  const inputTokens = response.usage.input_tokens
-  const outputTokens = response.usage.output_tokens
-
-  const raw = response.content[0]?.type === 'text' ? response.content[0].text.trim() : ''
   let size: TaskSize = 'M'
   try {
-    const jsonMatch = raw.match(/\{[^}]+\}/)
-    const parsed = sizeSchema.parse(JSON.parse(jsonMatch?.[0] ?? raw))
+    const jsonMatch = r.result.match(/\{[^}]+\}/)
+    const parsed = sizeSchema.parse(JSON.parse(jsonMatch?.[0] ?? r.result))
     size = parsed.size
   } catch {
-    log.warn({ raw, title }, 'sizer: could not parse response, defaulting to M')
+    log.warn({ raw: r.result.slice(0, 300), title }, 'sizer: could not parse response, defaulting to M')
   }
 
-  return { size, usage: { inputTokens, outputTokens, costUsd: estimateCost(modelId, inputTokens, outputTokens) } }
+  return { size, usage: usageFromResult(r) }
 }

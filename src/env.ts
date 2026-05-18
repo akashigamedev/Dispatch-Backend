@@ -17,8 +17,6 @@ const schema = z
 
     DATABASE_URL: z.string().url(),
 
-    ANTHROPIC_API_KEY: z.string().startsWith('sk-ant-'),
-
     PORT: z.coerce.number().int().positive().default(3000),
     PUBLIC_BASE_URL: z.string().url(),
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),

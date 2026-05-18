@@ -15,7 +15,6 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
     "@octokit/auth-app": "^7.1.4",
     "@octokit/graphql": "^8.2.1",
     "@octokit/rest": "^21.1.1",

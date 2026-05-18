@@ -4,7 +4,7 @@ import { fetchAssignedIssues, type DiscoveredIssue } from '../github/projects.js
 import { sizeTask } from '../claude/sizer.js'
 import { addSpend } from './budget.js'
 import { parseLabels } from './labels.js'
-import { detectAnthropicLimit } from '../util/anthropicError.js'
+import { detectModelLimit } from '../util/claudeError.js'
 import { log } from '../log.js'
 
 export { parseLabels } from './labels.js'
@@ -119,13 +119,13 @@ export async function sizeUnsizedTasks(userId: string): Promise<void> {
 
       log.info({ taskId: task.id, size, costUsd: usage.costUsd }, 'task sized')
     } catch (err) {
-      const limitInfo = detectAnthropicLimit(err)
+      const limitInfo = detectModelLimit(err)
       if (limitInfo) {
         await db.update(profiles)
           .set({ active: false, anthropic_resume_after: limitInfo.resumeAfter })
           .where(eq(profiles.id, userId))
-        log.warn({ userId, kind: limitInfo.kind, resumeAfter: limitInfo.resumeAfter }, 'Anthropic limit during sizing — auto checkout')
-        return // stop sizing loop entirely
+        log.warn({ userId, kind: limitInfo.kind, resumeAfter: limitInfo.resumeAfter }, 'Claude limit during sizing — auto checkout')
+        return
       }
       log.error({ err, taskId: task.id }, 'sizer error — skipping task')
     }

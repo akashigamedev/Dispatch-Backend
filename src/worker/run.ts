@@ -8,10 +8,11 @@ import { commentOnIssue } from '../github/issues.js'
 import { openPR } from '../github/pulls.js'
 import { log } from '../log.js'
 import { slugify } from '../util/slugify.js'
-import { detectAnthropicLimit } from '../util/anthropicError.js'
+import { detectModelLimit } from '../util/claudeError.js'
+import type { ClaudeEffort } from '../claude/client.js'
 import { CancelError, clearCancel, isCancelRequested, setCurrentTask } from './cancel.js'
 import { stageAndCommit, pushBranch, getDiffStat, getDiffLineCount, getChangedFiles, getWorkingDiff } from './git.js'
-import { setupWorkspace, cleanupWorkspace, getRepoTree, getClaudeMd } from './workspace.js'
+import { setupWorkspace, cleanupWorkspace } from './workspace.js'
 import { loadNightowlConfig, runAllVerifySteps } from './verify.js'
 
 function globToRegex(pattern: string): RegExp {
@@ -31,6 +32,12 @@ interface ProfileModels {
   coder?: { id?: string; thinking?: string }
   sizer?: { id?: string; thinking?: string }
   reviewer?: { id?: string; thinking?: string }
+}
+
+const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+function toEffort(raw: string | undefined, fallback: ClaudeEffort): ClaudeEffort {
+  return (VALID_EFFORTS as readonly string[]).includes(raw ?? '') ? (raw as ClaudeEffort) : fallback
 }
 
 async function addLog(taskId: number, level: string, message: string): Promise<void> {
@@ -85,13 +92,11 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
 
     // ── 2. Plan ───────────────────────────────────────────────────────────────
     checkCancel(taskId)
-    const repoTree = getRepoTree(workdir)
-    const claudeMd = getClaudeMd(workdir)
     const plannerModelId = models.planner?.id ?? 'claude-opus-4-7'
-    const plannerThinking = models.planner?.thinking ?? 'medium'
+    const plannerEffort = toEffort(models.planner?.thinking, 'medium')
 
     await addLog(taskId, 'info', `Planning with ${plannerModelId}`)
-    const planResult = await planTask(task.title, task.body, repoTree, claudeMd, plannerModelId, plannerThinking)
+    const planResult = await planTask(workdir, task.title, task.body, plannerModelId, plannerEffort)
 
     totalIn += planResult.usage.inputTokens
     totalOut += planResult.usage.outputTokens
@@ -125,14 +130,14 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     }
 
     const coderModelId = models.coder?.id ?? 'claude-sonnet-4-6'
-    const coderThinking = models.coder?.thinking ?? 'low'
+    const coderEffort = toEffort(models.coder?.thinking, 'low')
 
     await db.update(tasks).set({ status: 'coding' }).where(eq(tasks.id, taskId))
     await addLog(taskId, 'info', `Coding with ${coderModelId}`)
 
     const coderResult = await runCoderLoop(
       workdir, taskId, task.title, task.body, planResult.plan_md,
-      planResult.files_to_touch, coderModelId, coderThinking,
+      planResult.files_to_touch, coderModelId, coderEffort,
     )
     totalIn += coderResult.usage.inputTokens
     totalOut += coderResult.usage.outputTokens
@@ -167,7 +172,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       await db.update(tasks).set({ status: 'coding' }).where(eq(tasks.id, taskId))
       const fixResult = await runCoderLoop(
         workdir, taskId, task.title, task.body, planResult.plan_md,
-        planResult.files_to_touch, coderModelId, coderThinking, fixNotes,
+        planResult.files_to_touch, coderModelId, coderEffort, fixNotes,
       )
       totalIn += fixResult.usage.inputTokens
       totalOut += fixResult.usage.outputTokens
@@ -192,13 +197,13 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     }
 
     const reviewerModelId = models.reviewer?.id ?? 'claude-opus-4-7'
-    const reviewerThinking = models.reviewer?.thinking ?? 'low'
+    const reviewerEffort = toEffort(models.reviewer?.thinking, 'low')
 
     await db.update(tasks).set({ status: 'reviewing' }).where(eq(tasks.id, taskId))
     await addLog(taskId, 'info', `Reviewing with ${reviewerModelId}`)
 
     const workingDiff = getWorkingDiff(workdir)
-    const reviewResult = await reviewTask(planResult.plan_md, workingDiff, reviewerModelId, reviewerThinking)
+    const reviewResult = await reviewTask(planResult.plan_md, workingDiff, reviewerModelId, reviewerEffort)
 
     totalIn += reviewResult.usage.inputTokens
     totalOut += reviewResult.usage.outputTokens
@@ -217,7 +222,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
 
       const fixResult = await runCoderLoop(
         workdir, taskId, task.title, task.body, planResult.plan_md,
-        planResult.files_to_touch, coderModelId, coderThinking, reviewResult.notes,
+        planResult.files_to_touch, coderModelId, coderEffort, reviewResult.notes,
       )
       totalIn += fixResult.usage.inputTokens
       totalOut += fixResult.usage.outputTokens
@@ -280,16 +285,15 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       await db.update(tasks).set({ status: 'cancelled', finished_at: new Date() }).where(eq(tasks.id, taskId)).catch(() => null)
       await addLog(taskId, 'info', 'Task cancelled').catch(() => null)
     } else {
-      const limitInfo = detectAnthropicLimit(err)
+      const limitInfo = detectModelLimit(err)
       if (limitInfo) {
         await db.update(profiles)
           .set({ active: false, anthropic_resume_after: limitInfo.resumeAfter })
           .where(eq(profiles.id, userId))
           .catch(() => null)
-        log.warn({ userId, kind: limitInfo.kind, resumeAfter: limitInfo.resumeAfter }, 'Anthropic limit — auto checkout')
+        log.warn({ userId, kind: limitInfo.kind, resumeAfter: limitInfo.resumeAfter }, 'Claude limit — auto checkout')
 
         if (limitInfo.kind === 'rate_limit') {
-          // Re-queue so it retries automatically when rate limit clears
           await db.update(tasks)
             .set({ status: 'queued', started_at: null, branch_name: null })
             .where(eq(tasks.id, taskId))
@@ -298,8 +302,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
           return
         }
 
-        // usage_limit: fall through to failed — needs human intervention
-        await addLog(taskId, 'error', `Anthropic usage limit hit — clocked out. Clock in manually once resolved.`).catch(() => null)
+        await addLog(taskId, 'error', `Claude usage limit hit — clocked out. Clock in manually once resolved.`).catch(() => null)
       }
       const reason = err instanceof Error ? err.message : String(err)
       log.error({ err, taskId }, 'task failed')
