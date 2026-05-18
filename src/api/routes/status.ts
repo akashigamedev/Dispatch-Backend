@@ -1,7 +1,7 @@
 import { Router } from 'express'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { requireAuth } from '../auth.js'
-import { db, profiles } from '../../db/index.js'
+import { db, profiles, tasks } from '../../db/index.js'
 import { env } from '../../env.js'
 
 const router = Router()
@@ -27,6 +27,16 @@ router.get('/status', requireAuth, async (req, res) => {
     return
   }
 
+  const [costs] = await db
+    .select({
+      today: sql<string>`coalesce(sum(cost_usd) filter (where finished_at >= current_date), 0)`,
+      week: sql<string>`coalesce(sum(cost_usd) filter (where finished_at >= date_trunc('week', now())), 0)`,
+      month: sql<string>`coalesce(sum(cost_usd) filter (where finished_at >= date_trunc('month', now())), 0)`,
+      allTime: sql<string>`coalesce(sum(cost_usd), 0)`,
+    })
+    .from(tasks)
+    .where(eq(tasks.user_id, userId))
+
   const githubAuth: 'pat' | 'app_installed' | 'none' = profile.github_installation_id
     ? 'app_installed'
     : env.GITHUB_PAT
@@ -44,6 +54,12 @@ router.get('/status', requireAuth, async (req, res) => {
       workEnd: profile.work_end_local,
       dailyBudgetUsd: profile.daily_budget_usd,
       spentTodayUsd: profile.spent_today_usd,
+    },
+    costs: {
+      todayUsd: costs.today,
+      weekUsd: costs.week,
+      monthUsd: costs.month,
+      allTimeUsd: costs.allTime,
     },
   })
 })

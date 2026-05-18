@@ -45,9 +45,11 @@ export const profiles = pgTable('profiles', {
   work_start_local: time('work_start_local').notNull().default('10:00'),
   work_end_local: time('work_end_local').notNull().default('19:00'),
   timezone: text('timezone').notNull().default('Asia/Kolkata'),
+  budget_enabled: boolean('budget_enabled').notNull().default(false),
   daily_budget_usd: numeric('daily_budget_usd', { precision: 8, scale: 2 }).notNull().default('5.00'),
   spent_today_usd: numeric('spent_today_usd', { precision: 8, scale: 2 }).notNull().default('0.00'),
   budget_reset_date: text('budget_reset_date').notNull().default('now()'), // date stored as text for simplicity
+  anthropic_resume_after: timestamp('anthropic_resume_after', { withTimezone: true }),
   models: jsonb('models').notNull().default({
     planner: { id: 'claude-opus-4-7', thinking: 'medium' },
     sizer: { id: 'claude-opus-4-7', thinking: 'low' },
@@ -83,7 +85,7 @@ export const repos = pgTable(
     full_name: text('full_name').notNull(),
     github_repo_id: bigint('github_repo_id', { mode: 'number' }).notNull(),
     base_branch: text('base_branch').notNull().default('dev'),
-    branch_prefix: text('branch_prefix').notNull().default('nightowl/'),
+    branch_prefix: text('branch_prefix').notNull().default('fix/'),
     allowed: boolean('allowed').notNull().default(true),
   },
   (t) => [unique().on(t.user_id, t.github_repo_id)],

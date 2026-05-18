@@ -12,7 +12,7 @@ router.post('/checkin', requireAuth, async (req, res) => {
 
   await db
     .update(profiles)
-    .set({ active: true, checked_in_at: now, last_heartbeat_at: now })
+    .set({ active: true, checked_in_at: now, last_heartbeat_at: now, anthropic_resume_after: null })
     .where(eq(profiles.id, userId))
 
   log.info({ userId }, 'user checked in')

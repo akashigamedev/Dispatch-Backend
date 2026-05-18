@@ -1,4 +1,7 @@
 import { getGraphql } from './client.js'
+import { withGithubRetry } from '../util/githubRetry.js'
+import { isDoneInAnyProject } from './projectStatus.js'
+export { isDoneInAnyProject } from './projectStatus.js'
 
 interface ProjectStatusValue {
   name?: string
@@ -59,16 +62,6 @@ export interface DiscoveredIssue {
   labels: string[]
 }
 
-// Terminal Project status values that mean "do not work on this".
-const DONE_STATUSES = new Set(['done', 'completed', 'closed', 'cancelled', 'canceled', 'wontfix'])
-
-function isDoneInAnyProject(node: IssueSearchNode): boolean {
-  for (const item of node.projectItems.nodes) {
-    const status = item.fieldValueByName?.name?.toLowerCase().trim()
-    if (status && DONE_STATUSES.has(status)) return true
-  }
-  return false
-}
 
 function isIssue(node: Partial<IssueSearchNode>): node is IssueSearchNode {
   return typeof node.number === 'number' && typeof node.id === 'string'
@@ -80,9 +73,9 @@ export async function fetchAssignedIssues(): Promise<DiscoveredIssue[]> {
   let cursor: string | null = null
 
   do {
-    const data: IssueSearchResponse = await graphql<IssueSearchResponse>(QUERY, {
-      cursor: cursor ?? undefined,
-    })
+    const data: IssueSearchResponse = await withGithubRetry(() =>
+      graphql<IssueSearchResponse>(QUERY, { cursor: cursor ?? undefined }),
+    )
 
     for (const node of data.search.nodes) {
       if (!isIssue(node)) continue
