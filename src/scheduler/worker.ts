@@ -14,7 +14,6 @@ export async function runWorkerTick(userId: string): Promise<void> {
     .from(tasks)
     .where(and(eq(tasks.user_id, userId), eq(tasks.status, 'queued')))
     .orderBy(
-      sql`${tasks.manual_order} asc nulls last`,
       desc(tasks.priority),
       sql`${tasks.size} asc nulls last`,
       asc(tasks.enqueued_at),

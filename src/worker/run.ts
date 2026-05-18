@@ -279,10 +279,10 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       const limitInfo = detectModelLimit(err)
       if (limitInfo) {
         await db.update(profiles)
-          .set({ active: false, anthropic_resume_after: limitInfo.resumeAfter })
+          .set({ anthropic_resume_after: limitInfo.resumeAfter })
           .where(eq(profiles.id, userId))
           .catch(() => null)
-        log.warn({ userId, kind: limitInfo.kind, resumeAfter: limitInfo.resumeAfter }, 'Claude limit — auto checkout')
+        log.warn({ userId, kind: limitInfo.kind, resumeAfter: limitInfo.resumeAfter }, 'Claude limit — pausing worker until resume_after')
 
         if (limitInfo.kind === 'rate_limit') {
           await db.update(tasks)

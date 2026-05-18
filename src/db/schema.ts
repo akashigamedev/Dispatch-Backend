@@ -17,7 +17,6 @@ import {
 
 export const taskStatusEnum = pgEnum('task_status', [
   'queued',
-  'paused',
   'planning',
   'awaiting_input',
   'coding',
@@ -27,7 +26,6 @@ export const taskStatusEnum = pgEnum('task_status', [
   'done',
   'failed',
   'cancelled',
-  'skipped',
 ])
 
 export const taskSizeEnum = pgEnum('task_size', ['XS', 'S', 'M', 'L', 'XL'])
@@ -39,9 +37,6 @@ export const profiles = pgTable('profiles', {
   github_login: text('github_login').notNull(),
   github_user_id: bigint('github_user_id', { mode: 'number' }).notNull(),
   github_installation_id: bigint('github_installation_id', { mode: 'number' }),
-  active: boolean('active').notNull().default(false),
-  checked_in_at: timestamp('checked_in_at', { withTimezone: true }),
-  last_heartbeat_at: timestamp('last_heartbeat_at', { withTimezone: true }),
   work_start_local: time('work_start_local').notNull().default('10:00'),
   work_end_local: time('work_end_local').notNull().default('19:00'),
   timezone: text('timezone').notNull().default('Asia/Kolkata'),
@@ -103,11 +98,11 @@ export const tasks = pgTable(
     github_issue_node_id: text('github_issue_node_id').notNull(),
     github_issue_number: integer('github_issue_number').notNull(),
     github_issue_url: text('github_issue_url').notNull(),
+    github_project_node_id: text('github_project_node_id'),
     title: text('title').notNull(),
     body: text('body'),
     size: taskSizeEnum('size'),
     priority: integer('priority').notNull().default(0),
-    manual_order: integer('manual_order'),
     status: taskStatusEnum('status').notNull().default('queued'),
     branch_name: text('branch_name'),
     pr_url: text('pr_url'),
@@ -127,7 +122,6 @@ export const tasks = pgTable(
     index('tasks_queue_idx').on(
       t.user_id,
       t.status,
-      t.manual_order,
       t.priority,
       t.size,
       t.enqueued_at,

@@ -1,90 +1,110 @@
 import { Router } from 'express'
-import { and, asc, desc, eq, gt, min, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireAuth } from '../auth.js'
-import { db, tasks, taskLogs } from '../../db/index.js'
+import { db, githubProjects, tasks, taskLogs } from '../../db/index.js'
 import { requestCancel, getCurrentTask } from '../../worker/cancel.js'
+import { runWorkerTick } from '../../scheduler/worker.js'
+import { findOrCreateRepo, parseLabels } from '../../scheduler/poller.js'
 import { AppError } from '../../util/errors.js'
 
 const router = Router()
 
-router.get('/tasks', requireAuth, async (req, res) => {
-  const userId = req.user.id
-  const status = req.query.status as string | undefined
-  const limit = Math.min(Number(req.query.limit ?? 50), 100)
-  const cursor = Number(req.query.cursor ?? 0)
+const STARTABLE_STATUSES = ['done', 'failed', 'cancelled', 'awaiting_input'] as const
 
-  const where = and(
-    eq(tasks.user_id, userId),
-    status ? eq(tasks.status, status as never) : undefined,
-    cursor > 0 ? gt(tasks.id, cursor) : undefined,
-  )
-
-  const rows = await db
-    .select()
-    .from(tasks)
-    .where(where)
-    .orderBy(
-      sql`${tasks.manual_order} asc nulls last`,
-      desc(tasks.priority),
-      asc(tasks.size),
-      asc(tasks.enqueued_at),
-    )
-    .limit(limit)
-
-  res.json({
-    tasks: rows.map((t) => ({
-      id: t.id,
-      title: t.title,
-      status: t.status,
-      size: t.size,
-      priority: t.priority,
-      githubIssueUrl: t.github_issue_url,
-      githubIssueNumber: t.github_issue_number,
-      branchName: t.branch_name,
-      prUrl: t.pr_url,
-      enqueuedAt: t.enqueued_at,
-      startedAt: t.started_at,
-      finishedAt: t.finished_at,
-      costUsd: t.cost_usd,
-    })),
-    nextCursor: rows.length === limit ? rows[rows.length - 1]?.id ?? null : null,
-  })
+const startSchema = z.object({
+  issueNodeId: z.string().min(1),
+  issueNumber: z.number().int(),
+  issueUrl: z.string().url(),
+  title: z.string().min(1),
+  body: z.string().nullable().optional(),
+  repoFullName: z.string().min(1),
+  repoGithubId: z.number().int(),
+  projectNodeId: z.string().min(1),
+  labels: z.array(z.string()).default([]),
 })
 
-router.get('/tasks/:id', requireAuth, async (req, res) => {
+router.post('/tasks/start', requireAuth, async (req, res) => {
   const userId = req.user.id
-  const taskId = Number(req.params.id)
+  const parsed = startSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() })
+    return
+  }
+  const p = parsed.data
 
-  const [t] = await db
-    .select()
+  // Verify the project is one of the user's enabled projects.
+  const [project] = await db
+    .select({ id: githubProjects.id })
+    .from(githubProjects)
+    .where(and(
+      eq(githubProjects.user_id, userId),
+      eq(githubProjects.project_node_id, p.projectNodeId),
+      eq(githubProjects.enabled, true),
+    ))
+  if (!project) throw new AppError(400, 'project is not enabled for this user')
+
+  const repoId = await findOrCreateRepo(userId, p.repoFullName, p.repoGithubId)
+  if (!repoId) throw new AppError(500, 'failed to create repo')
+
+  const { size, priority } = parseLabels(p.labels)
+
+  // If a row already exists for this issue, requeue it; otherwise insert.
+  const [existing] = await db
+    .select({ id: tasks.id, status: tasks.status })
     .from(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.user_id, userId)))
+    .where(and(eq(tasks.user_id, userId), eq(tasks.github_issue_node_id, p.issueNodeId)))
 
-  if (!t) throw new AppError(404, 'task not found')
+  let taskId: number
+  if (existing) {
+    if (!STARTABLE_STATUSES.includes(existing.status as (typeof STARTABLE_STATUSES)[number])) {
+      throw new AppError(400, `task is already started or in flight (status: ${existing.status})`)
+    }
+    await db
+      .update(tasks)
+      .set({
+        status: 'queued',
+        title: p.title,
+        body: p.body ?? null,
+        size,
+        priority,
+        github_issue_url: p.issueUrl,
+        github_project_node_id: p.projectNodeId,
+        enqueued_at: new Date(),
+        started_at: null,
+        finished_at: null,
+        failure_reason: null,
+        branch_name: null,
+        pr_url: null,
+        pr_number: null,
+      })
+      .where(eq(tasks.id, existing.id))
+    taskId = existing.id
+  } else {
+    const [inserted] = await db
+      .insert(tasks)
+      .values({
+        user_id: userId,
+        repo_id: repoId,
+        github_issue_node_id: p.issueNodeId,
+        github_issue_number: p.issueNumber,
+        github_issue_url: p.issueUrl,
+        github_project_node_id: p.projectNodeId,
+        title: p.title,
+        body: p.body ?? null,
+        size,
+        priority,
+        status: 'queued',
+      })
+      .returning({ id: tasks.id })
+    if (!inserted) throw new AppError(500, 'failed to create task')
+    taskId = inserted.id
+  }
 
-  res.json({
-    id: t.id,
-    title: t.title,
-    body: t.body,
-    status: t.status,
-    size: t.size,
-    priority: t.priority,
-    githubIssueUrl: t.github_issue_url,
-    githubIssueNumber: t.github_issue_number,
-    branchName: t.branch_name,
-    prUrl: t.pr_url,
-    prNumber: t.pr_number,
-    planMd: t.plan_md,
-    diffSummary: t.diff_summary,
-    failureReason: t.failure_reason,
-    costUsd: t.cost_usd,
-    tokensIn: t.tokens_in,
-    tokensOut: t.tokens_out,
-    enqueuedAt: t.enqueued_at,
-    startedAt: t.started_at,
-    finishedAt: t.finished_at,
-  })
+  // Fire-and-forget — runs the next queued task if nothing else is in flight.
+  runWorkerTick(userId).catch(() => { /* logged inside worker */ })
+
+  res.json({ ok: true, taskId, status: 'queued' })
 })
 
 router.post('/tasks/:id/cancel', requireAuth, async (req, res) => {
@@ -133,132 +153,6 @@ router.get('/tasks/:id/logs', requireAuth, async (req, res) => {
     .limit(200)
 
   res.json({ logs })
-})
-
-router.post('/tasks/:id/pause', requireAuth, async (req, res) => {
-  const userId = req.user.id
-  const taskId = Number(req.params.id)
-
-  const [task] = await db
-    .select({ id: tasks.id, status: tasks.status })
-    .from(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.user_id, userId)))
-
-  if (!task) throw new AppError(404, 'task not found')
-  if (task.status !== 'queued') throw new AppError(400, `task is not queued (status: ${task.status})`)
-
-  await db.update(tasks).set({ status: 'paused' }).where(eq(tasks.id, taskId))
-  res.json({ ok: true })
-})
-
-router.post('/tasks/:id/resume', requireAuth, async (req, res) => {
-  const userId = req.user.id
-  const taskId = Number(req.params.id)
-
-  const [task] = await db
-    .select({ id: tasks.id, status: tasks.status })
-    .from(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.user_id, userId)))
-
-  if (!task) throw new AppError(404, 'task not found')
-  if (task.status !== 'paused') throw new AppError(400, `task is not paused (status: ${task.status})`)
-
-  await db.update(tasks).set({ status: 'queued' }).where(eq(tasks.id, taskId))
-  res.json({ ok: true })
-})
-
-router.post('/tasks/:id/skip', requireAuth, async (req, res) => {
-  const userId = req.user.id
-  const taskId = Number(req.params.id)
-
-  const [task] = await db
-    .select({ id: tasks.id, status: tasks.status })
-    .from(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.user_id, userId)))
-
-  if (!task) throw new AppError(404, 'task not found')
-  if (!['queued', 'paused'].includes(task.status)) {
-    throw new AppError(400, `task cannot be skipped (status: ${task.status})`)
-  }
-
-  await db.update(tasks).set({ status: 'skipped', finished_at: new Date() }).where(eq(tasks.id, taskId))
-  res.json({ ok: true })
-})
-
-router.post('/tasks/:id/requeue', requireAuth, async (req, res) => {
-  const userId = req.user.id
-  const taskId = Number(req.params.id)
-
-  const [task] = await db
-    .select({ id: tasks.id, status: tasks.status })
-    .from(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.user_id, userId)))
-
-  if (!task) throw new AppError(404, 'task not found')
-  const requeueableStatuses = ['done', 'failed', 'skipped', 'awaiting_input', 'cancelled']
-  if (!requeueableStatuses.includes(task.status)) {
-    throw new AppError(400, `task cannot be requeued (status: ${task.status})`)
-  }
-
-  await db.update(tasks).set({
-    status: 'queued',
-    finished_at: null,
-    started_at: null,
-    failure_reason: null,
-    branch_name: null,
-    pr_url: null,
-    pr_number: null,
-  }).where(eq(tasks.id, taskId))
-  res.json({ ok: true })
-})
-
-const reorderSchema = z.object({
-  orderedIds: z.array(z.number().int()).min(1),
-})
-
-router.post('/tasks/reorder', requireAuth, async (req, res) => {
-  const userId = req.user.id
-  const parsed = reorderSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.flatten() })
-    return
-  }
-
-  const { orderedIds } = parsed.data
-
-  await db.transaction(async (tx) => {
-    for (let i = 0; i < orderedIds.length; i++) {
-      await tx
-        .update(tasks)
-        .set({ manual_order: i })
-        .where(and(eq(tasks.id, orderedIds[i]!), eq(tasks.user_id, userId)))
-    }
-  })
-
-  res.json({ ok: true })
-})
-
-router.post('/tasks/:id/move_to_top', requireAuth, async (req, res) => {
-  const userId = req.user.id
-  const taskId = Number(req.params.id)
-
-  const [task] = await db
-    .select({ id: tasks.id })
-    .from(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.user_id, userId)))
-
-  if (!task) throw new AppError(404, 'task not found')
-
-  const [agg] = await db
-    .select({ minOrder: min(tasks.manual_order) })
-    .from(tasks)
-    .where(eq(tasks.user_id, userId))
-
-  const currentMin = agg?.minOrder ?? null
-  const newOrder = currentMin !== null ? currentMin - 1 : 0
-
-  await db.update(tasks).set({ manual_order: newOrder }).where(eq(tasks.id, taskId))
-  res.json({ ok: true })
 })
 
 export default router

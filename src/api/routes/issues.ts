@@ -1,0 +1,166 @@
+import { Router } from 'express'
+import { and, eq, inArray } from 'drizzle-orm'
+import { requireAuth } from '../auth.js'
+import { db, githubProjects, tasks } from '../../db/index.js'
+import { fetchAssignedIssues, type DiscoveredIssue } from '../../github/projects.js'
+import { parseLabels } from '../../scheduler/labels.js'
+import { AppError } from '../../util/errors.js'
+import { log } from '../../log.js'
+
+const router = Router()
+
+interface IssueItem {
+  issueNodeId: string
+  issueNumber: number
+  issueUrl: string
+  title: string
+  body: string | null
+  repoFullName: string
+  repoGithubId: number
+  labels: string[]
+  size: 'XS' | 'S' | 'M' | 'L' | 'XL' | null
+  priority: number
+  projectNodeId: string
+  projectTitle: string | null
+  task: {
+    id: number
+    status: string
+    branchName: string | null
+    prUrl: string | null
+    prNumber: number | null
+    costUsd: string
+    startedAt: string | null
+    finishedAt: string | null
+    failureReason: string | null
+  } | null
+}
+
+async function getEnabledProjectMap(userId: string): Promise<Map<string, string>> {
+  const rows = await db
+    .select({ nodeId: githubProjects.project_node_id, title: githubProjects.title })
+    .from(githubProjects)
+    .where(and(eq(githubProjects.user_id, userId), eq(githubProjects.enabled, true)))
+  return new Map(rows.map((r) => [r.nodeId, r.title]))
+}
+
+async function fetchTaskMap(userId: string, issueNodeIds: string[]): Promise<Map<string, IssueItem['task']>> {
+  if (issueNodeIds.length === 0) return new Map()
+  const rows = await db
+    .select({
+      id: tasks.id,
+      issueNodeId: tasks.github_issue_node_id,
+      status: tasks.status,
+      branchName: tasks.branch_name,
+      prUrl: tasks.pr_url,
+      prNumber: tasks.pr_number,
+      costUsd: tasks.cost_usd,
+      startedAt: tasks.started_at,
+      finishedAt: tasks.finished_at,
+      failureReason: tasks.failure_reason,
+    })
+    .from(tasks)
+    .where(and(eq(tasks.user_id, userId), inArray(tasks.github_issue_node_id, issueNodeIds)))
+
+  const map = new Map<string, IssueItem['task']>()
+  for (const r of rows) {
+    map.set(r.issueNodeId, {
+      id: r.id,
+      status: r.status,
+      branchName: r.branchName,
+      prUrl: r.prUrl,
+      prNumber: r.prNumber,
+      costUsd: r.costUsd,
+      startedAt: r.startedAt?.toISOString() ?? null,
+      finishedAt: r.finishedAt?.toISOString() ?? null,
+      failureReason: r.failureReason,
+    })
+  }
+  return map
+}
+
+function toItem(
+  issue: DiscoveredIssue,
+  projectNodeId: string,
+  projectTitle: string | null,
+  task: IssueItem['task'],
+): IssueItem {
+  const { size, priority } = parseLabels(issue.labels)
+  return {
+    issueNodeId: issue.nodeId,
+    issueNumber: issue.number,
+    issueUrl: issue.url,
+    title: issue.title,
+    body: issue.body,
+    repoFullName: issue.repoFullName,
+    repoGithubId: issue.repoGithubId,
+    labels: issue.labels,
+    size,
+    priority,
+    projectNodeId,
+    projectTitle,
+    task,
+  }
+}
+
+router.get('/issues', requireAuth, async (req, res) => {
+  const userId = req.user.id
+  const projectFilter = req.query.project as string | undefined
+
+  const enabledProjects = await getEnabledProjectMap(userId)
+  if (enabledProjects.size === 0) {
+    res.json({ items: [] })
+    return
+  }
+
+  let issues: DiscoveredIssue[]
+  try {
+    issues = await fetchAssignedIssues()
+  } catch (err) {
+    log.error({ err, userId }, 'fetchAssignedIssues failed')
+    throw new AppError(502, 'failed to fetch issues from GitHub')
+  }
+
+  const matched: Array<{ issue: DiscoveredIssue; projectNodeId: string }> = []
+  for (const issue of issues) {
+    const projectNodeId = issue.projectNodeIds.find((id) => enabledProjects.has(id))
+    if (!projectNodeId) continue
+    if (projectFilter && projectFilter !== projectNodeId) continue
+    matched.push({ issue, projectNodeId })
+  }
+
+  const taskMap = await fetchTaskMap(userId, matched.map((m) => m.issue.nodeId))
+
+  const items = matched.map(({ issue, projectNodeId }) =>
+    toItem(issue, projectNodeId, enabledProjects.get(projectNodeId) ?? null, taskMap.get(issue.nodeId) ?? null),
+  )
+
+  res.json({ items })
+})
+
+router.get('/issues/:nodeId', requireAuth, async (req, res) => {
+  const userId = req.user.id
+  const nodeId = req.params.nodeId
+
+  const enabledProjects = await getEnabledProjectMap(userId)
+
+  let issues: DiscoveredIssue[]
+  try {
+    issues = await fetchAssignedIssues()
+  } catch (err) {
+    log.error({ err, userId }, 'fetchAssignedIssues failed')
+    throw new AppError(502, 'failed to fetch issues from GitHub')
+  }
+
+  const issue = issues.find((i) => i.nodeId === nodeId)
+  if (!issue) throw new AppError(404, 'issue not found or not assigned to you')
+
+  const projectNodeId = issue.projectNodeIds.find((id) => enabledProjects.has(id))
+  if (!projectNodeId) throw new AppError(404, 'issue not in any enabled project')
+
+  const taskMap = await fetchTaskMap(userId, [issue.nodeId])
+  const item = toItem(issue, projectNodeId, enabledProjects.get(projectNodeId) ?? null, taskMap.get(issue.nodeId) ?? null)
+
+  res.json(item)
+})
+
+export default router

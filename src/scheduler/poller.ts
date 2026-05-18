@@ -1,19 +1,21 @@
 import { and, eq, isNull, lt } from 'drizzle-orm'
-import { db, githubProjects, profiles, repos, tasks } from '../db/index.js'
-import { fetchAssignedIssues, type DiscoveredIssue } from '../github/projects.js'
+import { db, profiles, repos, tasks } from '../db/index.js'
 import { sizeTask } from '../claude/sizer.js'
 import { addSpend } from './budget.js'
-import { parseLabels } from './labels.js'
 import { detectModelLimit } from '../util/claudeError.js'
 import { log } from '../log.js'
 
 export { parseLabels } from './labels.js'
 
-async function findOrCreateRepo(userId: string, issue: DiscoveredIssue): Promise<number | null> {
+export async function findOrCreateRepo(
+  userId: string,
+  repoFullName: string,
+  repoGithubId: number,
+): Promise<number | null> {
   const existing = await db
     .select({ id: repos.id })
     .from(repos)
-    .where(and(eq(repos.user_id, userId), eq(repos.full_name, issue.repoFullName)))
+    .where(and(eq(repos.user_id, userId), eq(repos.full_name, repoFullName)))
     .limit(1)
 
   if (existing[0]) return existing[0].id
@@ -22,62 +24,12 @@ async function findOrCreateRepo(userId: string, issue: DiscoveredIssue): Promise
     .insert(repos)
     .values({
       user_id: userId,
-      full_name: issue.repoFullName,
-      github_repo_id: issue.repoGithubId,
+      full_name: repoFullName,
+      github_repo_id: repoGithubId,
     })
     .returning({ id: repos.id })
 
   return inserted[0]?.id ?? null
-}
-
-export async function pollProjects(userId: string): Promise<void> {
-  log.debug({ userId }, 'polling assigned issues')
-
-  const enabledProjects = await db
-    .select({ nodeId: githubProjects.project_node_id })
-    .from(githubProjects)
-    .where(and(eq(githubProjects.user_id, userId), eq(githubProjects.enabled, true)))
-  const enabledProjectIds = new Set(enabledProjects.map((p) => p.nodeId))
-
-  if (enabledProjectIds.size === 0) {
-    log.debug({ userId }, 'poll skipped — no enabled projects')
-    return
-  }
-
-  const issues = await fetchAssignedIssues()
-  let queued = 0
-  let skippedNoProject = 0
-  for (const issue of issues) {
-    if (!issue.projectNodeIds.some((id) => enabledProjectIds.has(id))) {
-      skippedNoProject++
-      continue
-    }
-    const repoId = await findOrCreateRepo(userId, issue)
-    if (!repoId) continue
-    const { size, priority } = parseLabels(issue.labels)
-    const result = await db
-      .insert(tasks)
-      .values({
-        user_id: userId,
-        repo_id: repoId,
-        github_issue_node_id: issue.nodeId,
-        github_issue_number: issue.number,
-        github_issue_url: issue.url,
-        title: issue.title,
-        body: issue.body,
-        size,
-        priority,
-        status: 'queued',
-      })
-      .onConflictDoNothing()
-      .returning({ id: tasks.id })
-    if (result.length > 0) queued++
-  }
-  if (queued > 0) {
-    log.info({ found: issues.length, newlyQueued: queued, skippedNoProject }, 'poll complete — new tasks queued')
-  } else {
-    log.debug({ found: issues.length, skippedNoProject }, 'poll complete — no new tasks')
-  }
 }
 
 export async function requeueStaleAwaitingInput(userId: string): Promise<void> {
@@ -111,7 +63,11 @@ export async function sizeUnsizedTasks(userId: string): Promise<void> {
   const unsized = await db
     .select({ id: tasks.id, title: tasks.title, body: tasks.body })
     .from(tasks)
-    .where(and(eq(tasks.user_id, userId), eq(tasks.status, 'queued'), isNull(tasks.size)))
+    .where(and(
+      eq(tasks.user_id, userId),
+      eq(tasks.status, 'queued'),
+      isNull(tasks.size),
+    ))
     .limit(10)
 
   if (unsized.length === 0) return
@@ -139,9 +95,9 @@ export async function sizeUnsizedTasks(userId: string): Promise<void> {
       const limitInfo = detectModelLimit(err)
       if (limitInfo) {
         await db.update(profiles)
-          .set({ active: false, anthropic_resume_after: limitInfo.resumeAfter })
+          .set({ anthropic_resume_after: limitInfo.resumeAfter })
           .where(eq(profiles.id, userId))
-        log.warn({ userId, kind: limitInfo.kind, resumeAfter: limitInfo.resumeAfter }, 'Claude limit during sizing — auto checkout')
+        log.warn({ userId, kind: limitInfo.kind, resumeAfter: limitInfo.resumeAfter }, 'Claude limit during sizing — sizing paused')
         return
       }
       log.error({ err, taskId: task.id }, 'sizer error — skipping task')

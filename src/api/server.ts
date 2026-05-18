@@ -2,9 +2,8 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import { notFound, errorHandler } from '../util/errors.js'
 import { log } from '../log.js'
 import healthRouter from './routes/health.js'
-import statusRouter from './routes/status.js'
 import tasksRouter from './routes/tasks.js'
-import checkinRouter from './routes/checkin.js'
+import issuesRouter from './routes/issues.js'
 import settingsRouter from './routes/settings.js'
 import projectsRouter from './routes/projects.js'
 
@@ -26,9 +25,8 @@ export function createServer() {
   app.use(requestLogger)
 
   app.use(healthRouter)
-  app.use(statusRouter)
   app.use(tasksRouter)
-  app.use(checkinRouter)
+  app.use(issuesRouter)
   app.use(settingsRouter)
   app.use(projectsRouter)
 
