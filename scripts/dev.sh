@@ -12,16 +12,18 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "→ ngrok http --domain=$DOMAIN $PORT"
-ngrok http --domain="$DOMAIN" "$PORT" --log=stdout --log-format=logfmt > /tmp/nightowl-ngrok.log 2>&1 &
-NGROK_PID=$!
-
-# Wait until the tunnel is actually up.
-for i in {1..15}; do
-  if curl -sf "https://$DOMAIN" -o /dev/null -m 2; then break; fi
-  sleep 1
-done
-echo "→ tunnel: https://$DOMAIN  (logs: /tmp/nightowl-ngrok.log)"
+if curl -sf "https://$DOMAIN" -o /dev/null -m 2; then
+  echo "→ tunnel already online: https://$DOMAIN (skipping ngrok start)"
+else
+  echo "→ ngrok http --url=$DOMAIN $PORT"
+  ngrok http --url="$DOMAIN" "$PORT" --log=stdout --log-format=logfmt > /tmp/nightowl-ngrok.log 2>&1 &
+  NGROK_PID=$!
+  for i in {1..15}; do
+    if curl -sf "https://$DOMAIN" -o /dev/null -m 2; then break; fi
+    sleep 1
+  done
+  echo "→ tunnel: https://$DOMAIN  (logs: /tmp/nightowl-ngrok.log)"
+fi
 echo
 
 cd "$(dirname "$0")/.."
