@@ -261,7 +261,7 @@ router.get('/tasks', requireAuth, async (req, res) => {
         .orderBy(
           QUEUED_STATUS_RANK_SQL,
           desc(tasks.priority),
-          asc(sql`${tasks.size} nulls last`),
+          sql`${tasks.size} asc nulls last`,
           asc(tasks.enqueued_at),
         )
 
