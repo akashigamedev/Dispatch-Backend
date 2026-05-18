@@ -3,8 +3,8 @@ import { spawnClaude, usageFromResult, type UsageSummary, type ClaudeEffort } fr
 import { log } from '../log.js'
 import { slugify } from '../util/slugify.js'
 
-export const CHANGE_TYPES = ['feat', 'fix', 'docs', 'refactor', 'perf', 'test', 'chore'] as const
-export type ChangeType = (typeof CHANGE_TYPES)[number]
+const CHANGE_TYPES = ['feat', 'fix', 'docs', 'refactor', 'perf', 'test', 'chore'] as const
+type ChangeType = (typeof CHANGE_TYPES)[number]
 
 const planSchema = z.object({
   plan_md: z.string(),

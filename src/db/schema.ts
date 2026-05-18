@@ -35,6 +35,7 @@ export const profiles = pgTable('profiles', {
   id: uuid('id').primaryKey(),
   github_login: text('github_login').notNull(),
   github_user_id: bigint('github_user_id', { mode: 'number' }).notNull(),
+  // reserved for future GitHub App mode; PAT mode does not populate this
   github_installation_id: bigint('github_installation_id', { mode: 'number' }),
   anthropic_resume_after: timestamp('anthropic_resume_after', { withTimezone: true }),
   models: jsonb('models').notNull().default({
