@@ -8,6 +8,7 @@ interface ProjectStatusValue {
 }
 
 interface ProjectItemNode {
+  project?: { id: string } | null
   fieldValueByName?: ProjectStatusValue | null
 }
 
@@ -40,6 +41,7 @@ const QUERY = `
           labels(first: 20) { nodes { name } }
           projectItems(first: 10) {
             nodes {
+              project { id }
               fieldValueByName(name: "Status") {
                 ... on ProjectV2ItemFieldSingleSelectValue { name }
               }
@@ -60,6 +62,7 @@ export interface DiscoveredIssue {
   repoFullName: string
   repoGithubId: number
   labels: string[]
+  projectNodeIds: string[]
 }
 
 
@@ -89,6 +92,9 @@ export async function fetchAssignedIssues(): Promise<DiscoveredIssue[]> {
         repoFullName: node.repository.nameWithOwner,
         repoGithubId: node.repository.databaseId,
         labels: node.labels.nodes.map((l: { name: string }) => l.name),
+        projectNodeIds: node.projectItems.nodes
+          .map((it) => it.project?.id)
+          .filter((id): id is string => typeof id === 'string'),
       })
     }
 

@@ -1,5 +1,5 @@
 import { and, eq, isNull, lt } from 'drizzle-orm'
-import { db, profiles, repos, tasks } from '../db/index.js'
+import { db, githubProjects, profiles, repos, tasks } from '../db/index.js'
 import { fetchAssignedIssues, type DiscoveredIssue } from '../github/projects.js'
 import { sizeTask } from '../claude/sizer.js'
 import { addSpend } from './budget.js'
@@ -32,9 +32,26 @@ async function findOrCreateRepo(userId: string, issue: DiscoveredIssue): Promise
 
 export async function pollProjects(userId: string): Promise<void> {
   log.debug({ userId }, 'polling assigned issues')
+
+  const enabledProjects = await db
+    .select({ nodeId: githubProjects.project_node_id })
+    .from(githubProjects)
+    .where(and(eq(githubProjects.user_id, userId), eq(githubProjects.enabled, true)))
+  const enabledProjectIds = new Set(enabledProjects.map((p) => p.nodeId))
+
+  if (enabledProjectIds.size === 0) {
+    log.debug({ userId }, 'poll skipped — no enabled projects')
+    return
+  }
+
   const issues = await fetchAssignedIssues()
   let queued = 0
+  let skippedNoProject = 0
   for (const issue of issues) {
+    if (!issue.projectNodeIds.some((id) => enabledProjectIds.has(id))) {
+      skippedNoProject++
+      continue
+    }
     const repoId = await findOrCreateRepo(userId, issue)
     if (!repoId) continue
     const { size, priority } = parseLabels(issue.labels)
@@ -57,9 +74,9 @@ export async function pollProjects(userId: string): Promise<void> {
     if (result.length > 0) queued++
   }
   if (queued > 0) {
-    log.info({ found: issues.length, newlyQueued: queued }, 'poll complete — new tasks queued')
+    log.info({ found: issues.length, newlyQueued: queued, skippedNoProject }, 'poll complete — new tasks queued')
   } else {
-    log.debug({ found: issues.length }, 'poll complete — no new tasks')
+    log.debug({ found: issues.length, skippedNoProject }, 'poll complete — no new tasks')
   }
 }
 
