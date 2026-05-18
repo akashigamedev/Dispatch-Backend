@@ -130,7 +130,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     }
 
     const coderModelId = models.coder?.id ?? 'claude-sonnet-4-6'
-    const coderEffort = toEffort(models.coder?.thinking, 'low')
+    const coderEffort = toEffort(models.coder?.thinking, 'medium')
 
     await db.update(tasks).set({ status: 'coding' }).where(eq(tasks.id, taskId))
     await addLog(taskId, 'info', `Coding with ${coderModelId}`)

@@ -53,7 +53,7 @@ export const profiles = pgTable('profiles', {
   models: jsonb('models').notNull().default({
     planner: { id: 'claude-opus-4-7', thinking: 'medium' },
     sizer: { id: 'claude-opus-4-7', thinking: 'low' },
-    coder: { id: 'claude-sonnet-4-6', thinking: 'low' },
+    coder: { id: 'claude-sonnet-4-6', thinking: 'medium' },
     reviewer: { id: 'claude-opus-4-7', thinking: 'low' },
   }),
   created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
