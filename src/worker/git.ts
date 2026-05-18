@@ -58,6 +58,10 @@ export function getWorkingDiff(workdir: string): string {
   }
 }
 
+export function renameBranch(workdir: string, fromBranch: string, toBranch: string): void {
+  execSync(`git branch -m "${fromBranch}" "${toBranch}"`, { cwd: workdir, stdio: 'pipe' })
+}
+
 export function getChangedFiles(workdir: string): string[] {
   try {
     return execSync('git diff HEAD --name-only', { cwd: workdir, stdio: 'pipe' })

@@ -4,14 +4,13 @@ import { runCoderLoop } from '../claude/coder.js'
 import { planTask } from '../claude/planner.js'
 import { reviewTask } from '../claude/reviewer.js'
 import { closeIssue, commentOnIssue } from '../github/issues.js'
-import { openPR } from '../github/pulls.js'
+import { openPR, postPRComment, buildReviewerComment } from '../github/pulls.js'
 import { getIssueProjectStatus, setIssueProjectStatus } from '../github/issueStatus.js'
 import { log } from '../log.js'
-import { slugify } from '../util/slugify.js'
 import { detectModelLimit } from '../util/claudeError.js'
 import type { ClaudeEffort } from '../claude/client.js'
 import { CancelError, clearCancel, getAbortSignal, isCancelRequested, setCurrentTask } from './cancel.js'
-import { stageAndCommit, pushBranch, getDiffStat, getDiffLineCount, getChangedFiles, getWorkingDiff } from './git.js'
+import { stageAndCommit, pushBranch, getDiffStat, getDiffLineCount, getChangedFiles, getWorkingDiff, renameBranch } from './git.js'
 import { setupWorkspace, cleanupWorkspace } from './workspace.js'
 import { loadNightowlConfig, runAllVerifySteps } from './verify.js'
 
@@ -72,17 +71,22 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     checkCancel(taskId)
 
     const models = (profile.models ?? {}) as ProfileModels
-    const branchName = `${repo.branch_prefix}${task.github_issue_number}-${slugify(task.title)}`
+    // The real branch name (type prefix + issue# + user-facing slug) is determined
+    // by the planner during phase 2 below. We clone into a placeholder branch and
+    // rename it once `planResult` is back. `repo.branch_prefix` from .nightowl.yml
+    // is no longer used — the type prefix now comes from `planResult.change_type`.
+    const planningBranch = `nightowl/task-${taskId}-planning`
+    let branchName = planningBranch
 
     let totalIn = 0
     let totalOut = 0
     let totalCost = 0
 
     // ── 1. Setup ──────────────────────────────────────────────────────────────
-    await addLog(taskId, 'info', `Cloning ${repo.full_name} → ${branchName}`)
-    await db.update(tasks).set({ status: 'planning', started_at: new Date(), branch_name: branchName }).where(eq(tasks.id, taskId))
+    await addLog(taskId, 'info', `Cloning ${repo.full_name}`)
+    await db.update(tasks).set({ status: 'planning', started_at: new Date() }).where(eq(tasks.id, taskId))
 
-    workdir = await setupWorkspace(taskId, repo.full_name, repo.base_branch, branchName)
+    workdir = await setupWorkspace(taskId, repo.full_name, repo.base_branch, planningBranch)
     await addLog(taskId, 'info', 'Workspace ready')
 
     // ── 2. Plan ───────────────────────────────────────────────────────────────
@@ -97,7 +101,10 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     totalOut += planResult.usage.outputTokens
     totalCost += planResult.usage.costUsd
 
-    await db.update(tasks).set({ plan_md: planResult.plan_md }).where(eq(tasks.id, taskId))
+    branchName = `${planResult.change_type}/${task.github_issue_number}-${planResult.branch_slug}`
+    renameBranch(workdir, planningBranch, branchName)
+    await db.update(tasks).set({ plan_md: planResult.plan_md, branch_name: branchName }).where(eq(tasks.id, taskId))
+    await addLog(taskId, 'info', `Branch → ${branchName}`)
     await addLog(taskId, 'claude', `Plan ready — confidence: ${planResult.confidence.toFixed(2)}`)
 
     if (planResult.confidence < 0.5 || planResult.clarifying_questions.length > 0) {
@@ -225,9 +232,15 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     await db.update(tasks).set({ status: 'pushing' }).where(eq(tasks.id, taskId))
 
     const authorEmail = `${profile.github_user_id}+${profile.github_login}@users.noreply.github.com`
-    const commitMsg = `feat: ${task.title}`
+    const commitMsg = [
+      planResult.commit_title,
+      '',
+      planResult.commit_body,
+      '',
+      `Closes #${task.github_issue_number}`,
+    ].join('\n')
     stageAndCommit(workdir, commitMsg, profile.github_login, authorEmail)
-    await addLog(taskId, 'info', `Committed: ${commitMsg}`)
+    await addLog(taskId, 'info', `Committed: ${planResult.commit_title}`)
 
     pushBranch(workdir, branchName, repo.full_name)
     await addLog(taskId, 'info', `Pushed ${branchName}`)
@@ -238,11 +251,17 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       baseBranch: repo.base_branch,
       branchName,
       issueNumber: task.github_issue_number,
-      issueTitle: task.title,
+      commitTitle: planResult.commit_title,
+      commitBody: planResult.commit_body,
       githubLogin: profile.github_login,
-      planMd: planResult.plan_md,
-      verifyResult,
     })
+
+    try {
+      await postPRComment(repo.full_name, prNumber, buildReviewerComment(verifyResult, planResult.plan_md))
+    } catch (err) {
+      log.warn({ err, taskId, prNumber }, 'failed to post reviewer comment')
+      await addLog(taskId, 'warn', `Could not post reviewer comment: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
+    }
 
     await db.update(tasks).set({
       status: 'done',

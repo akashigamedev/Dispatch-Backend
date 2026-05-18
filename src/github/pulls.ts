@@ -7,10 +7,9 @@ export interface OpenPROptions {
   baseBranch: string
   branchName: string
   issueNumber: number
-  issueTitle: string
+  commitTitle: string
+  commitBody: string
   githubLogin: string
-  planMd: string
-  verifyResult: VerifyResult
 }
 
 export interface OpenPRResult {
@@ -18,26 +17,8 @@ export interface OpenPRResult {
   prNumber: number
 }
 
-function buildVerificationLines(verifyResult: VerifyResult): string {
-  if (verifyResult.steps.length === 0) return '- ⚠️ no verify steps configured'
-  return verifyResult.steps
-    .map((s) => {
-      const icon = s.passed ? '✅' : s.required ? '❌' : '⚠️'
-      return `- ${icon} ${s.name}`
-    })
-    .join('\n')
-}
-
 function buildPRBody(opts: OpenPROptions): string {
-  return [
-    '## Linked issue',
-    `Closes #${opts.issueNumber}`,
-    '',
-    opts.planMd,
-    '',
-    '## Verification',
-    buildVerificationLines(opts.verifyResult),
-  ].join('\n')
+  return `${opts.commitBody}\n\nCloses #${opts.issueNumber}`
 }
 
 export async function openPR(opts: OpenPROptions): Promise<OpenPRResult> {
@@ -47,11 +28,42 @@ export async function openPR(opts: OpenPROptions): Promise<OpenPRResult> {
   const { data } = await withGithubRetry(() => octokit.rest.pulls.create({
     owner,
     repo,
-    title: opts.issueTitle,
+    title: opts.commitTitle,
     head: opts.branchName,
     base: opts.baseBranch,
     body: buildPRBody(opts),
   }))
 
   return { prUrl: data.html_url, prNumber: data.number }
+}
+
+export function buildReviewerComment(verify: VerifyResult, planMd: string): string {
+  const verifyLines = verify.steps.length === 0
+    ? '- ⚠️ no verify steps configured'
+    : verify.steps
+      .map((s) => `- ${s.passed ? '✅' : s.required ? '❌' : '⚠️'} ${s.name}`)
+      .join('\n')
+
+  return [
+    '## Verification',
+    verifyLines,
+    '',
+    '<details>',
+    '<summary>🦉 Implementation plan (engineering detail)</summary>',
+    '',
+    planMd,
+    '',
+    '</details>',
+  ].join('\n')
+}
+
+export async function postPRComment(repoFullName: string, prNumber: number, body: string): Promise<void> {
+  const [owner, repo] = repoFullName.split('/')
+  const octokit = getOctokit()
+  await withGithubRetry(() => octokit.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number: prNumber,
+    body,
+  }))
 }
