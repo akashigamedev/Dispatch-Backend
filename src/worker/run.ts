@@ -69,11 +69,6 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       return
     }
 
-    if (!repo.allowed) {
-      await db.update(tasks).set({ status: 'failed', failure_reason: 'repo not in allow-list', finished_at: new Date() }).where(eq(tasks.id, taskId))
-      return
-    }
-
     checkCancel(taskId)
 
     const models = (profile.models ?? {}) as ProfileModels

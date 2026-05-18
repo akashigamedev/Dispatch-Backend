@@ -6,7 +6,6 @@ import statusRouter from './routes/status.js'
 import tasksRouter from './routes/tasks.js'
 import checkinRouter from './routes/checkin.js'
 import settingsRouter from './routes/settings.js'
-import reposRouter from './routes/repos.js'
 import projectsRouter from './routes/projects.js'
 
 function requestLogger(req: Request, res: Response, next: NextFunction) {
@@ -31,7 +30,6 @@ export function createServer() {
   app.use(tasksRouter)
   app.use(checkinRouter)
   app.use(settingsRouter)
-  app.use(reposRouter)
   app.use(projectsRouter)
 
   app.use(notFound)

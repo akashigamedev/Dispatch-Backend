@@ -86,7 +86,6 @@ export const repos = pgTable(
     github_repo_id: bigint('github_repo_id', { mode: 'number' }).notNull(),
     base_branch: text('base_branch').notNull().default('dev'),
     branch_prefix: text('branch_prefix').notNull().default('fix/'),
-    allowed: boolean('allowed').notNull().default(true),
   },
   (t) => [unique().on(t.user_id, t.github_repo_id)],
 )
