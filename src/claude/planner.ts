@@ -30,9 +30,10 @@ export interface PlanResult {
 }
 
 /**
- * Plan a task. Runs in Claude Code's `plan` permission mode — the agent can
- * read the workspace freely (Glob/Grep/Read/Bash for read-only commands) but
- * physically cannot mutate files. Output is enforced against PLAN_JSON_SCHEMA.
+ * Plan a task. Write tools (Edit/Write/NotebookEdit) are disallowed so the
+ * agent can explore freely but cannot mutate files. We avoid `plan` permission
+ * mode because it hijacks final output with an ExitPlanMode summary, breaking
+ * the JSON schema we enforce here.
  */
 export async function planTask(
   workdir: string,
@@ -42,11 +43,15 @@ export async function planTask(
   effort: ClaudeEffort = 'medium',
 ): Promise<PlanResult> {
   const prompt = [
-    'You are planning the implementation of a GitHub issue.',
-    'Explore the repository using Read, Glob, and Grep as needed to understand the codebase.',
-    'If a CLAUDE.md exists at the repo root, read it first for project conventions.',
+    'Your job is to produce a structured JSON implementation plan for the GitHub issue below.',
+    'Explore the repository with Read/Glob/Grep as needed. Read CLAUDE.md at the repo root first if it exists.',
     '',
-    'When ready, output ONLY a JSON object with this exact shape:',
+    'CRITICAL OUTPUT REQUIREMENT:',
+    'Your final assistant message MUST be a single JSON object and NOTHING ELSE.',
+    'Do NOT prefix or suffix it with prose, summaries, code fences, or phrases like "Plan delivered" / "Plan saved".',
+    'The downstream caller parses your message with JSON.parse — any non-JSON characters cause the task to fail.',
+    '',
+    'JSON shape (all fields required):',
     '{',
     '  "plan_md": "markdown plan with clear, ordered steps",',
     '  "confidence": 0.0,         // 0.0-1.0; < 0.5 means you need clarification',
@@ -63,7 +68,9 @@ export async function planTask(
     model: modelId,
     cwd: workdir,
     addDir: [workdir],
-    permissionMode: 'plan',
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch'],
+    appendSystemPrompt:
+      'You are a planning subagent invoked by an automated pipeline. Your final message must be a single valid JSON object matching the schema in the user prompt — no prose, no markdown fences, no preamble, no trailing summary. The orchestrator parses this output programmatically.',
     effort,
     outputFormat: 'json',
     jsonSchema: PLAN_JSON_SCHEMA,
