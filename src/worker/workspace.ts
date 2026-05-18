@@ -24,7 +24,11 @@ export async function setupWorkspace(
   mkdirSync(dir, { recursive: true })
 
   const cloneUrl = getCloneUrl(repoFullName)
-  execSync(`git clone --depth 50 "${cloneUrl}" .`, { cwd: dir, stdio: 'pipe', timeout: 120_000 })
+  execSync(`git clone --depth 50 --branch "${baseBranch}" "${cloneUrl}" .`, {
+    cwd: dir,
+    stdio: 'pipe',
+    timeout: 120_000,
+  })
   execSync(`git checkout -b "${branchName}" "origin/${baseBranch}"`, { cwd: dir, stdio: 'pipe' })
 
   return dir
