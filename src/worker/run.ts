@@ -10,7 +10,7 @@ import { log } from '../log.js'
 import { slugify } from '../util/slugify.js'
 import { detectModelLimit } from '../util/claudeError.js'
 import type { ClaudeEffort } from '../claude/client.js'
-import { CancelError, clearCancel, isCancelRequested, setCurrentTask } from './cancel.js'
+import { CancelError, clearCancel, getAbortSignal, isCancelRequested, setCurrentTask } from './cancel.js'
 import { stageAndCommit, pushBranch, getDiffStat, getDiffLineCount, getChangedFiles, getWorkingDiff } from './git.js'
 import { setupWorkspace, cleanupWorkspace } from './workspace.js'
 import { loadNightowlConfig, runAllVerifySteps } from './verify.js'
@@ -137,7 +137,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
 
     const coderResult = await runCoderLoop(
       workdir, taskId, task.title, task.body, planResult.plan_md,
-      planResult.files_to_touch, coderModelId, coderEffort,
+      planResult.files_to_touch, coderModelId, coderEffort, undefined, getAbortSignal(taskId),
     )
     totalIn += coderResult.usage.inputTokens
     totalOut += coderResult.usage.outputTokens
@@ -172,7 +172,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       await db.update(tasks).set({ status: 'coding' }).where(eq(tasks.id, taskId))
       const fixResult = await runCoderLoop(
         workdir, taskId, task.title, task.body, planResult.plan_md,
-        planResult.files_to_touch, coderModelId, coderEffort, fixNotes,
+        planResult.files_to_touch, coderModelId, coderEffort, fixNotes, getAbortSignal(taskId),
       )
       totalIn += fixResult.usage.inputTokens
       totalOut += fixResult.usage.outputTokens
@@ -222,7 +222,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
 
       const fixResult = await runCoderLoop(
         workdir, taskId, task.title, task.body, planResult.plan_md,
-        planResult.files_to_touch, coderModelId, coderEffort, reviewResult.notes,
+        planResult.files_to_touch, coderModelId, coderEffort, reviewResult.notes, getAbortSignal(taskId),
       )
       totalIn += fixResult.usage.inputTokens
       totalOut += fixResult.usage.outputTokens
@@ -281,7 +281,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     log.info({ taskId, prUrl, totalCost }, 'task complete')
 
   } catch (err) {
-    if (err instanceof CancelError) {
+    if (err instanceof CancelError || isCancelRequested(taskId)) {
       await db.update(tasks).set({ status: 'cancelled', finished_at: new Date() }).where(eq(tasks.id, taskId)).catch(() => null)
       await addLog(taskId, 'info', 'Task cancelled').catch(() => null)
     } else {
