@@ -3,8 +3,9 @@ import { db, profiles, repos, tasks, taskLogs } from '../db/index.js'
 import { runCoderLoop } from '../claude/coder.js'
 import { planTask } from '../claude/planner.js'
 import { reviewTask } from '../claude/reviewer.js'
-import { commentOnIssue } from '../github/issues.js'
+import { closeIssue, commentOnIssue } from '../github/issues.js'
 import { openPR } from '../github/pulls.js'
+import { getIssueProjectStatus, setIssueProjectStatus } from '../github/issueStatus.js'
 import { log } from '../log.js'
 import { slugify } from '../util/slugify.js'
 import { detectModelLimit } from '../util/claudeError.js'
@@ -253,6 +254,30 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       tokens_in: totalIn,
       tokens_out: totalOut,
     }).where(eq(tasks.id, taskId))
+
+    try {
+      await closeIssue(repo.full_name, task.github_issue_number)
+      await addLog(taskId, 'info', `Closed issue #${task.github_issue_number}`)
+    } catch (err) {
+      log.warn({ err, taskId }, 'failed to close issue')
+      await addLog(taskId, 'warn', `Could not close issue: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
+    }
+
+    if (task.github_project_node_id) {
+      try {
+        const ctx = await getIssueProjectStatus(task.github_issue_node_id, task.github_project_node_id)
+        const option = ctx?.options.find((o) => o.name.toLowerCase() === 'code review')
+        if (ctx && option) {
+          await setIssueProjectStatus(task.github_project_node_id, ctx.projectItemId, ctx.statusFieldId, option.id)
+          await addLog(taskId, 'info', `Project status → Code Review`)
+        } else {
+          await addLog(taskId, 'warn', `Could not set project status: no "Code Review" option found`)
+        }
+      } catch (err) {
+        log.warn({ err, taskId }, 'failed to set project status')
+        await addLog(taskId, 'warn', `Could not set project status: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
+      }
+    }
 
     await addLog(taskId, 'info', `Done — PR: ${prUrl}`)
     log.info({ taskId, prUrl, totalCost }, 'task complete')
