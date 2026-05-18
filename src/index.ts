@@ -1,4 +1,6 @@
 import 'dotenv/config'
+import { setDefaultResultOrder } from 'dns'
+setDefaultResultOrder('ipv4first') // many home networks can't route to Supabase's AAAA record
 import './env.js' // validate env first — exits on invalid config
 import { and, eq, inArray, isNotNull, lt, lte } from 'drizzle-orm'
 import { createServer } from './api/server.js'
