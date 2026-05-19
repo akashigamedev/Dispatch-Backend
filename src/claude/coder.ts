@@ -89,7 +89,7 @@ export async function runCoderLoop(
     appendSystemPrompt: systemAppend,
     effort,
     outputFormat: 'stream-json',
-    maxTurns: 50,
+    maxTurns: 150,
     onEvent: (event) => handleStreamEvent(taskId, event),
     signal,
   })

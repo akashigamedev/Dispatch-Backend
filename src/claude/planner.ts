@@ -111,7 +111,7 @@ export async function planTask(
       'You are a planning subagent invoked by an automated pipeline. Your final message must be a single valid JSON object matching the schema in the user prompt — no prose, no markdown fences, no preamble, no trailing summary. The orchestrator parses this output programmatically.',
     effort,
     outputFormat: 'json',
-    maxTurns: 30,
+    maxTurns: 100,
   })
 
   let parsed: z.infer<typeof planSchema>
@@ -216,7 +216,7 @@ export async function planRevision(
       'You are a revision-planning subagent invoked by an automated pipeline. Your final message must be a single valid JSON object matching the schema in the user prompt — no prose, no markdown fences. The orchestrator parses this output programmatically.',
     effort,
     outputFormat: 'json',
-    maxTurns: 30,
+    maxTurns: 100,
   })
 
   let parsed: z.infer<typeof revisionPlanSchema>
