@@ -12,7 +12,7 @@ import type { ClaudeEffort } from '../claude/client.js'
 import { CancelError, clearCancel, getAbortSignal, isCancelRequested, setCurrentTask } from './cancel.js'
 import { stageAndCommit, pushBranch, getDiffStat, getDiffLineCount, getChangedFiles, getWorkingDiff, renameBranch } from './git.js'
 import { setupWorkspace, cleanupWorkspace } from './workspace.js'
-import { loadNightowlConfig, runAllVerifySteps } from './verify.js'
+import { loadDispatchConfig, runAllVerifySteps } from './verify.js'
 
 function globToRegex(pattern: string): RegExp {
   const escaped = pattern
@@ -73,9 +73,9 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     const models = (profile.models ?? {}) as ProfileModels
     // The real branch name (type prefix + issue# + user-facing slug) is determined
     // by the planner during phase 2 below. We clone into a placeholder branch and
-    // rename it once `planResult` is back. `repo.branch_prefix` from .nightowl.yml
+    // rename it once `planResult` is back. `repo.branch_prefix` from .dispatch.yml
     // is no longer used — the type prefix now comes from `planResult.change_type`.
-    const planningBranch = `nightowl/task-${taskId}-planning`
+    const planningBranch = `dispatch/task-${taskId}-planning`
     let branchName = planningBranch
 
     let totalIn = 0
@@ -109,7 +109,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
 
     if (planResult.confidence < 0.5 || planResult.clarifying_questions.length > 0) {
       const body = [
-        '🦉 **Nightowl needs clarification before proceeding:**',
+        '🦉 **Dispatch needs clarification before proceeding:**',
         '',
         ...planResult.clarifying_questions.map((q) => `- ${q}`),
         '',
@@ -142,24 +142,24 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
 
     // ── 4. Verify ─────────────────────────────────────────────────────────────
     checkCancel(taskId)
-    const nightowlConfig = loadNightowlConfig(workdir)
-    const maxDiff = nightowlConfig.max_diff_lines ?? 800
+    const dispatchConfig = loadDispatchConfig(workdir)
+    const maxDiff = dispatchConfig.max_diff_lines ?? 800
 
     const diffLines = getDiffLineCount(workdir)
     if (diffLines > maxDiff) {
       throw new Error(`diff too large (${diffLines} lines > ${maxDiff}) — needs human decomposition`)
     }
 
-    if (nightowlConfig.paths_off_limits?.length) {
+    if (dispatchConfig.paths_off_limits?.length) {
       const changed = getChangedFiles(workdir)
-      const blocked = changed.filter((f) => matchesAnyGlob(f, nightowlConfig.paths_off_limits!))
+      const blocked = changed.filter((f) => matchesAnyGlob(f, dispatchConfig.paths_off_limits!))
       if (blocked.length > 0) throw new Error(`edited protected path(s): ${blocked.join(', ')}`)
     }
 
     await db.update(tasks).set({ status: 'verifying' }).where(eq(tasks.id, taskId))
     await addLog(taskId, 'info', 'Running verify steps')
 
-    let verifyResult = runAllVerifySteps(workdir, nightowlConfig)
+    let verifyResult = runAllVerifySteps(workdir, dispatchConfig)
 
     if (!verifyResult.passed && verifyResult.failedStep) {
       await addLog(taskId, 'warn', `Verify failed: ${verifyResult.failedStep.name} — retrying with coder`)
@@ -175,7 +175,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       totalCost += fixResult.usage.costUsd
 
       await db.update(tasks).set({ status: 'verifying' }).where(eq(tasks.id, taskId))
-      verifyResult = runAllVerifySteps(workdir, nightowlConfig)
+      verifyResult = runAllVerifySteps(workdir, dispatchConfig)
 
       if (!verifyResult.passed && verifyResult.failedStep) {
         throw new Error(`verify failed: ${verifyResult.failedStep.name}`)
@@ -219,7 +219,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       totalCost += fixResult.usage.costUsd
 
       await db.update(tasks).set({ status: 'verifying' }).where(eq(tasks.id, taskId))
-      verifyResult = runAllVerifySteps(workdir, nightowlConfig)
+      verifyResult = runAllVerifySteps(workdir, dispatchConfig)
 
       if (!verifyResult.passed && verifyResult.failedStep) {
         throw new Error(`verify failed after reviewer fix: ${verifyResult.failedStep.name}`)

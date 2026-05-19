@@ -10,7 +10,7 @@ const verifyStepSchema = z.object({
   required: z.boolean().default(true),
 })
 
-const nightowlConfigSchema = z.object({
+const dispatchConfigSchema = z.object({
   base_branch: z.string().optional(),
   branch_prefix: z.string().optional(),
   paths_off_limits: z.array(z.string()).optional(),
@@ -18,7 +18,7 @@ const nightowlConfigSchema = z.object({
   max_diff_lines: z.number().optional(),
 })
 
-export type NightowlConfig = z.infer<typeof nightowlConfigSchema>
+export type DispatchConfig = z.infer<typeof dispatchConfigSchema>
 export type VerifyStep = z.infer<typeof verifyStepSchema>
 
 export interface VerifyStepResult {
@@ -34,13 +34,13 @@ export interface VerifyResult {
   failedStep?: VerifyStep & { output: string }
 }
 
-export function loadNightowlConfig(workdir: string): NightowlConfig {
-  const configPath = join(workdir, '.nightowl.yml')
+export function loadDispatchConfig(workdir: string): DispatchConfig {
+  const configPath = join(workdir, '.dispatch.yml')
   if (!existsSync(configPath)) return {}
   try {
     const raw = readFileSync(configPath, 'utf-8')
     const parsed = parseYaml(raw)
-    return nightowlConfigSchema.parse(parsed)
+    return dispatchConfigSchema.parse(parsed)
   } catch {
     return {}
   }
@@ -93,7 +93,7 @@ export function runVerifyStep(workdir: string, step: VerifyStep): VerifyStepResu
   return { name: step.name, passed, required: step.required, output }
 }
 
-export function runAllVerifySteps(workdir: string, config: NightowlConfig): VerifyResult {
+export function runAllVerifySteps(workdir: string, config: DispatchConfig): VerifyResult {
   const steps = config.verify ?? autoDetectSteps(workdir)
   if (steps.length === 0) {
     return { passed: true, steps: [] }

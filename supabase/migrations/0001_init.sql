@@ -74,7 +74,7 @@ create table repos (
   full_name       text not null,
   github_repo_id  bigint not null,
   base_branch     text not null default 'dev',
-  branch_prefix   text not null default 'nightowl/',
+  branch_prefix   text not null default 'dispatch/',
   allowed         boolean not null default true,
   unique(user_id, github_repo_id)
 );

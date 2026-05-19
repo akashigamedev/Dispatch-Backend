@@ -28,7 +28,7 @@ async function recoverInterruptedTasks(): Promise<void> {
 const app = createServer()
 
 app.listen(env.PORT, () => {
-  log.info({ port: env.PORT, env: env.NODE_ENV }, 'nightowl server started')
+  log.info({ port: env.PORT, env: env.NODE_ENV }, 'dispatch server started')
 })
 
 recoverInterruptedTasks().catch((err) => log.error({ err }, 'boot recovery error'))

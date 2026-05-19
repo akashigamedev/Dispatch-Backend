@@ -14,14 +14,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-Nightowl is a single-process Node server that turns GitHub issues into PRs by shelling out to the local `claude` CLI. It is **not** a hosted multi-tenant service in the usual sense — auth is multi-user (Supabase JWT), but the worker runs one task at a time per process, in the OS user's filesystem, using whatever `claude` credentials are installed on the host.
+Dispatch is a single-process Node server that turns GitHub issues into PRs by shelling out to the local `claude` CLI. It is **not** a hosted multi-tenant service in the usual sense — auth is multi-user (Supabase JWT), but the worker runs one task at a time per process, in the OS user's filesystem, using whatever `claude` credentials are installed on the host.
 
 ### Request → task → PR flow
 
 1. **API (`src/api/`)** — Express 5. `requireAuth` (`api/auth.ts`) validates a Supabase JWT, then upserts a `profiles` row keyed by `auth.users.id`. Routes are mounted flat in `api/server.ts` (`tasks`, `issues`, `settings`, `projects`, `createTask`, `health`).
 2. **DB (`src/db/schema.ts`, drizzle-orm + `postgres`)** — Source of truth. Key tables: `profiles` (per-user model config + Anthropic rate-limit hold), `repos`, `github_projects` (synced allowlist of GH Projects v2 boards), `tasks` (queue + lifecycle), `task_logs`.
 3. **Scheduler (`src/scheduler/`)** — `worker.ts` picks the next `queued` task for a user (ordered by `priority desc`, `size asc nulls last`, `enqueued_at asc`) and calls `runTask`. A module-level `isRunning` flag enforces single-flight per process. `poller.ts` handles auxiliary maintenance: sizing unsized tasks via `claude/sizer.ts` and requeueing stale `awaiting_input`.
-4. **Worker (`src/worker/run.ts`)** — The main state machine. Walks a task through `planning → coding → verifying → reviewing → pushing → done`, with `awaiting_input` and `failed` as exits. For each phase it shells out to Claude (`src/claude/`) and to git (`worker/git.ts`) inside a per-task workspace (`worker/workspace.ts`). `worker/verify.ts` reads `.nightowl.yml` from the target repo to run verify steps. Cancellation uses an AbortSignal tracked in `worker/cancel.ts` and checked between phases.
+4. **Worker (`src/worker/run.ts`)** — The main state machine. Walks a task through `planning → coding → verifying → reviewing → pushing → done`, with `awaiting_input` and `failed` as exits. For each phase it shells out to Claude (`src/claude/`) and to git (`worker/git.ts`) inside a per-task workspace (`worker/workspace.ts`). `worker/verify.ts` reads `.dispatch.yml` from the target repo to run verify steps. Cancellation uses an AbortSignal tracked in `worker/cancel.ts` and checked between phases.
 5. **`src/index.ts` boot** — On startup, marks any in-flight tasks (`planning`/`coding`/…/`pushing`) as `failed` with `failure_reason: 'interrupted'` so a crash/restart doesn't leave orphans. Then starts a 2-minute `tick()` safety-net loop that runs `requeueStaleAwaitingInput → sizeUnsizedTasks → runWorkerTick` per user. The **primary** worker trigger is the `Start` API call invoking `runWorkerTick` directly; the interval is just a fallback.
 
 ### Claude CLI integration (`src/claude/`)
@@ -39,4 +39,4 @@ PAT-only today. `GITHUB_PAT` is required in `env.ts`; `github/client.ts` returns
 - ESM with `"type": "module"` and NodeNext resolution — **imports use `.js` extensions** for local files (e.g. `from './env.js'`) even though sources are `.ts`. Don't strip them.
 - The dev script reserves the ngrok domain `nonirritably-premortuary-malisa.ngrok-free.dev`; reuse it for GitHub webhook URLs in development.
 - `setDefaultResultOrder('ipv4first')` in `index.ts` is intentional — Supabase's AAAA record breaks on many home networks.
-- The systemd unit (`systemd/nightowl.service`) caps memory at 900M and runs as user `nightowl` from `/opt/nightowl` with env loaded from `/etc/nightowl/env`.
+- The systemd unit (`systemd/dispatch.service`) caps memory at 900M and runs as user `dispatch` from `/opt/dispatch` with env loaded from `/etc/dispatch/env`.

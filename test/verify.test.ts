@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { loadNightowlConfig, autoDetectSteps } from '../src/worker/verify.js'
+import { loadDispatchConfig, autoDetectSteps } from '../src/worker/verify.js'
 
 let dir: string
 
@@ -14,13 +14,13 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-describe('loadNightowlConfig', () => {
-  it('returns empty object when no .nightowl.yml exists', () => {
-    expect(loadNightowlConfig(dir)).toEqual({})
+describe('loadDispatchConfig', () => {
+  it('returns empty object when no .dispatch.yml exists', () => {
+    expect(loadDispatchConfig(dir)).toEqual({})
   })
 
-  it('parses a full .nightowl.yml', () => {
-    writeFileSync(join(dir, '.nightowl.yml'), `
+  it('parses a full .dispatch.yml', () => {
+    writeFileSync(join(dir, '.dispatch.yml'), `
 base_branch: main
 branch_prefix: bot/
 max_diff_lines: 500
@@ -35,7 +35,7 @@ verify:
     run: pnpm test
     required: false
 `)
-    const cfg = loadNightowlConfig(dir)
+    const cfg = loadDispatchConfig(dir)
     expect(cfg.base_branch).toBe('main')
     expect(cfg.branch_prefix).toBe('bot/')
     expect(cfg.max_diff_lines).toBe(500)
@@ -46,13 +46,13 @@ verify:
   })
 
   it('returns empty object on malformed YAML', () => {
-    writeFileSync(join(dir, '.nightowl.yml'), '{ invalid yaml: [')
-    expect(loadNightowlConfig(dir)).toEqual({})
+    writeFileSync(join(dir, '.dispatch.yml'), '{ invalid yaml: [')
+    expect(loadDispatchConfig(dir)).toEqual({})
   })
 
   it('ignores unknown fields', () => {
-    writeFileSync(join(dir, '.nightowl.yml'), 'unknown_field: 42\nbase_branch: dev')
-    expect(loadNightowlConfig(dir).base_branch).toBe('dev')
+    writeFileSync(join(dir, '.dispatch.yml'), 'unknown_field: 42\nbase_branch: dev')
+    expect(loadDispatchConfig(dir).base_branch).toBe('dev')
   })
 })
 

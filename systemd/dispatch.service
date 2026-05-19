@@ -1,0 +1,17 @@
+[Unit]
+Description=Dispatch server
+After=network.target
+
+[Service]
+Type=simple
+User=dispatch
+WorkingDirectory=/opt/dispatch
+EnvironmentFile=/etc/dispatch/env
+ExecStart=/usr/bin/node /opt/dispatch/dist/index.js
+Restart=on-failure
+RestartSec=5s
+MemoryMax=900M
+TasksMax=200
+
+[Install]
+WantedBy=multi-user.target

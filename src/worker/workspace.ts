@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { env } from '../env.js'
 
-const BASE = process.env.WORKSPACE_DIR ?? '/tmp/nightowl'
+const BASE = process.env.WORKSPACE_DIR ?? '/tmp/dispatch'
 
 export function workspacePath(taskId: number): string {
   return join(BASE, String(taskId))
