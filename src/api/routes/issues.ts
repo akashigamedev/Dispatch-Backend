@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { and, eq, inArray } from 'drizzle-orm'
 import { requireAuth } from '../auth.js'
 import { db, githubProjects, tasks } from '../../db/index.js'
-import { fetchAssignedIssues, type DiscoveredIssue } from '../../github/projects.js'
+import { fetchAssignedIssues, fetchIssueByNodeId, type DiscoveredIssue } from '../../github/projects.js'
 import { getIssueProjectStatus, setIssueProjectStatus } from '../../github/issueStatus.js'
 import { parseLabels } from '../../scheduler/labels.js'
 import { AppError } from '../../util/errors.js'
@@ -140,20 +140,18 @@ router.get('/issues', requireAuth, async (req, res) => {
 
 router.get('/issues/:nodeId', requireAuth, async (req, res) => {
   const userId = req.user.id
-  const nodeId = req.params.nodeId
+  const nodeId = String(req.params.nodeId)
 
   const enabledProjects = await getEnabledProjectMap(userId)
 
-  let issues: DiscoveredIssue[]
+  let issue: DiscoveredIssue | null
   try {
-    issues = await fetchAssignedIssues({ includeAllStatuses: true, includeClosed: true })
+    issue = await fetchIssueByNodeId(nodeId)
   } catch (err) {
-    log.error({ err, userId }, 'fetchAssignedIssues failed')
-    throw new AppError(502, 'failed to fetch issues from GitHub')
+    log.error({ err, userId, nodeId }, 'fetchIssueByNodeId failed')
+    throw new AppError(502, 'failed to fetch issue from GitHub')
   }
-
-  const issue = issues.find((i) => i.nodeId === nodeId)
-  if (!issue) throw new AppError(404, 'issue not found or not assigned to you')
+  if (!issue) throw new AppError(404, 'issue not found')
 
   const projectNodeId = issue.projectNodeIds.find((id) => enabledProjects.has(id))
   if (!projectNodeId) throw new AppError(404, 'issue not in any enabled project')
