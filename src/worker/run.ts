@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm'
 import { db, profiles, repos, tasks, taskLogs } from '../db/index.js'
 import { runCoderLoop } from '../claude/coder.js'
-import { planTask } from '../claude/planner.js'
+import { planTask, planRevision } from '../claude/planner.js'
 import { reviewTask } from '../claude/reviewer.js'
 import { closeIssue, commentOnIssue } from '../github/issues.js'
 import { openPR, postPRComment, buildReviewerComment } from '../github/pulls.js'
@@ -51,12 +51,6 @@ type TaskRow = typeof tasks.$inferSelect
 type ProfileRow = typeof profiles.$inferSelect
 type RepoRow = typeof repos.$inferSelect
 
-function deriveCommitTitle(feedback: string): string {
-  const firstLine = feedback.split('\n', 1)[0]!.trim()
-  const trimmed = firstLine.length > 72 ? firstLine.slice(0, 69) + '...' : firstLine
-  return trimmed || 'Apply review feedback'
-}
-
 async function runRevision(
   taskId: number,
   task: TaskRow,
@@ -67,6 +61,8 @@ async function runRevision(
   const branchName = task.branch_name!
 
   const models = (profile.models ?? {}) as ProfileModels
+  const plannerModelId = models.planner?.id ?? 'claude-opus-4-7'
+  const plannerEffort = toEffort(models.planner?.thinking, 'medium')
   const coderModelId = models.coder?.id ?? 'claude-sonnet-4-6'
   const coderEffort = toEffort(models.coder?.thinking, 'medium')
 
@@ -77,18 +73,59 @@ async function runRevision(
   let totalOut = 0
   let totalCost = 0
 
-  await db.update(tasks).set({ status: 'coding', started_at: new Date(), finished_at: null, failure_reason: null }).where(eq(tasks.id, taskId))
+  await db.update(tasks).set({ status: 'planning', started_at: new Date(), finished_at: null, failure_reason: null }).where(eq(tasks.id, taskId))
 
   await addLog(taskId, 'info', `Cloning ${repo.full_name} @ ${branchName}`)
   const workdir = await setupRevisionWorkspace(taskId, repo.full_name, branchName)
   await addLog(taskId, 'info', 'Workspace ready')
 
   checkCancel(taskId)
+  await addLog(taskId, 'info', `Planning revision with ${plannerModelId}`)
+  const revisionPlan = await planRevision(
+    workdir, task.title, task.body, task.plan_md ?? '', task.diff_summary, feedback,
+    plannerModelId, plannerEffort,
+  )
+  totalIn += revisionPlan.usage.inputTokens
+  totalOut += revisionPlan.usage.outputTokens
+  totalCost += revisionPlan.usage.costUsd
+  await addLog(taskId, 'claude', `Revision plan ready — confidence: ${revisionPlan.confidence.toFixed(2)}`)
+
+  if (revisionPlan.confidence < 0.5 || revisionPlan.clarifying_questions.length > 0) {
+    const body = [
+      'Dispatch needs clarification before applying these changes:',
+      '',
+      ...revisionPlan.clarifying_questions.map((q) => `- ${q}`),
+      '',
+      `_Confidence: ${(revisionPlan.confidence * 100).toFixed(0)}%_`,
+    ].join('\n')
+    if (task.pr_number) {
+      try {
+        await postPRComment(repo.full_name, task.pr_number, body)
+      } catch (err) {
+        log.warn({ err, taskId }, 'failed to post clarification comment on PR')
+      }
+    }
+    await db.update(tasks)
+      .set({
+        status: 'awaiting_input',
+        finished_at: new Date(),
+        revision_feedback: null,
+        cost_usd: (Number(task.cost_usd ?? 0) + totalCost).toFixed(4),
+        tokens_in: (task.tokens_in ?? 0) + totalIn,
+        tokens_out: (task.tokens_out ?? 0) + totalOut,
+      })
+      .where(eq(tasks.id, taskId))
+    await addLog(taskId, 'info', 'Awaiting clarification — commented on PR')
+    return workdir
+  }
+
+  checkCancel(taskId)
+  await db.update(tasks).set({ status: 'coding' }).where(eq(tasks.id, taskId))
   await addLog(taskId, 'info', `Coding with ${coderModelId}`)
 
   const coderResult = await runCoderLoop(
-    workdir, taskId, task.title, task.body, task.plan_md ?? '',
-    [], coderModelId, coderEffort, feedback, getAbortSignal(taskId),
+    workdir, taskId, task.title, task.body, revisionPlan.plan_md,
+    revisionPlan.files_to_touch, coderModelId, coderEffort, feedback, getAbortSignal(taskId),
   )
   totalIn += coderResult.usage.inputTokens
   totalOut += coderResult.usage.outputTokens
@@ -142,11 +179,11 @@ async function runRevision(
   await db.update(tasks).set({ status: 'pushing' }).where(eq(tasks.id, taskId))
 
   const authorEmail = `${profile.github_user_id}+${profile.github_login}@users.noreply.github.com`
-  const commitTitle = deriveCommitTitle(feedback)
-  const commitBody = feedback.includes('\n') ? feedback : ''
-  const commitMsg = commitBody ? `${commitTitle}\n\n${commitBody}` : commitTitle
+  const commitMsg = revisionPlan.commit_body
+    ? `${revisionPlan.commit_title}\n\n${revisionPlan.commit_body}`
+    : revisionPlan.commit_title
   stageAndCommit(workdir, commitMsg, profile.github_login, authorEmail)
-  await addLog(taskId, 'info', `Committed: ${commitTitle}`)
+  await addLog(taskId, 'info', `Committed: ${revisionPlan.commit_title}`)
 
   pushBranch(workdir, branchName, repo.full_name)
   await addLog(taskId, 'info', `Pushed ${branchName}`)

@@ -135,3 +135,106 @@ export async function planTask(
 
   return { ...parsed, usage: usageFromResult(r) }
 }
+
+const revisionPlanSchema = z.object({
+  plan_md: z.string(),
+  confidence: z.number().min(0).max(1),
+  files_to_touch: z.array(z.string()).default([]),
+  clarifying_questions: z.array(z.string()).default([]),
+  commit_title: z.string().max(72),
+  commit_body: z.string(),
+})
+
+export interface RevisionPlanResult {
+  plan_md: string
+  confidence: number
+  files_to_touch: string[]
+  clarifying_questions: string[]
+  commit_title: string
+  commit_body: string
+  usage: UsageSummary
+}
+
+export async function planRevision(
+  workdir: string,
+  title: string,
+  body: string | null,
+  previousPlan: string,
+  previousDiffSummary: string | null,
+  feedback: string,
+  modelId = 'claude-opus-4-7',
+  effort: ClaudeEffort = 'medium',
+): Promise<RevisionPlanResult> {
+  const prompt = [
+    'You are revising an existing pull request based on review feedback.',
+    'The repository is already checked out on the branch that holds the prior implementation.',
+    'Use Read/Glob/Grep/Bash (git diff, git log) to see what is already implemented before planning.',
+    '',
+    'Your job is to produce a focused JSON plan for ONLY the changes needed to address the feedback,',
+    'plus a commit message for those changes.',
+    '',
+    'CRITICAL OUTPUT REQUIREMENT:',
+    'Your final assistant message MUST be a single JSON object and NOTHING ELSE.',
+    'Do NOT prefix or suffix with prose, summaries, code fences, or any other text.',
+    '',
+    'JSON shape (all fields required):',
+    '{',
+    '  "plan_md": "markdown plan covering ONLY the revision (not a re-plan of the whole feature)",',
+    '  "confidence": 0.0,         // 0.0-1.0; < 0.5 means you need clarification',
+    '  "files_to_touch": [],      // file paths likely to be modified by this revision',
+    '  "clarifying_questions": [],// non-empty ONLY if confidence < 0.5',
+    '  "commit_title": "...",     // <=72 chars, lowercase imperative, describes the FIX from the user POV',
+    '  "commit_body": "..."       // plain-language markdown summary of what this revision changes',
+    '}',
+    '',
+    'commit_title MUST describe the revision itself, not the original feature.',
+    '  Good: "fix: handle empty input in csv export"',
+    '  Bad:  "feat: export issues as csv" (that was the previous commit)',
+    '',
+    'commit_body should be a short paragraph or 1-3 bullets describing what was wrong and what is now fixed.',
+    'Do NOT mention file names, function names, or implementation detail.',
+    'Do NOT include "Closes #N" — the worker handles trailers.',
+    '',
+    `## Issue: ${title}`,
+    body ?? '',
+    '',
+    '## Previous implementation plan',
+    previousPlan || '(no plan recorded)',
+    '',
+    previousDiffSummary ? `## Previous diff summary\n${previousDiffSummary}\n` : '',
+    '## Reviewer feedback (this is what you must address)',
+    feedback,
+  ].filter(Boolean).join('\n')
+
+  const r = await spawnClaude({
+    prompt,
+    model: modelId,
+    cwd: workdir,
+    addDir: [workdir],
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch'],
+    appendSystemPrompt:
+      'You are a revision-planning subagent invoked by an automated pipeline. Your final message must be a single valid JSON object matching the schema in the user prompt — no prose, no markdown fences. The orchestrator parses this output programmatically.',
+    effort,
+    outputFormat: 'json',
+    maxTurns: 30,
+  })
+
+  let parsed: z.infer<typeof revisionPlanSchema>
+  try {
+    const jsonMatch = r.result.match(/\{[\s\S]*\}/)
+    parsed = revisionPlanSchema.parse(JSON.parse(jsonMatch?.[0] ?? r.result))
+  } catch {
+    log.warn({ raw: r.result.slice(0, 500), title }, 'revision planner: could not parse JSON response')
+    const fallbackTitle = feedback.split('\n', 1)[0]!.trim().slice(0, 72) || 'apply review feedback'
+    parsed = {
+      plan_md: r.result || 'No revision plan generated.',
+      confidence: 0.3,
+      files_to_touch: [],
+      clarifying_questions: ['Unable to parse revision plan — please review the feedback manually.'],
+      commit_title: fallbackTitle,
+      commit_body: feedback,
+    }
+  }
+
+  return { ...parsed, usage: usageFromResult(r) }
+}
