@@ -11,7 +11,7 @@ import { detectModelLimit } from '../util/claudeError.js'
 import type { ClaudeEffort } from '../claude/client.js'
 import { CancelError, clearCancel, getAbortSignal, isCancelRequested, setCurrentTask } from './cancel.js'
 import { stageAndCommit, pushBranch, getDiffStat, getDiffLineCount, getChangedFiles, getWorkingDiff, renameBranch } from './git.js'
-import { setupWorkspace, cleanupWorkspace } from './workspace.js'
+import { setupWorkspace, setupRevisionWorkspace, cleanupWorkspace } from './workspace.js'
 import { loadDispatchConfig, runAllVerifySteps } from './verify.js'
 
 function globToRegex(pattern: string): RegExp {
@@ -47,6 +47,141 @@ function checkCancel(taskId: number): void {
   if (isCancelRequested(taskId)) throw new CancelError()
 }
 
+type TaskRow = typeof tasks.$inferSelect
+type ProfileRow = typeof profiles.$inferSelect
+type RepoRow = typeof repos.$inferSelect
+
+function deriveCommitTitle(feedback: string): string {
+  const firstLine = feedback.split('\n', 1)[0]!.trim()
+  const trimmed = firstLine.length > 72 ? firstLine.slice(0, 69) + '...' : firstLine
+  return trimmed || 'Apply review feedback'
+}
+
+async function runRevision(
+  taskId: number,
+  task: TaskRow,
+  profile: ProfileRow,
+  repo: RepoRow,
+): Promise<string> {
+  const feedback = task.revision_feedback!
+  const branchName = task.branch_name!
+
+  const models = (profile.models ?? {}) as ProfileModels
+  const coderModelId = models.coder?.id ?? 'claude-sonnet-4-6'
+  const coderEffort = toEffort(models.coder?.thinking, 'medium')
+
+  const feedbackPreview = feedback.length > 120 ? feedback.slice(0, 117) + '...' : feedback
+  await addLog(taskId, 'info', `--- Revision requested: ${feedbackPreview.replace(/\n/g, ' ')} ---`)
+
+  let totalIn = 0
+  let totalOut = 0
+  let totalCost = 0
+
+  await db.update(tasks).set({ status: 'coding', started_at: new Date(), finished_at: null, failure_reason: null }).where(eq(tasks.id, taskId))
+
+  await addLog(taskId, 'info', `Cloning ${repo.full_name} @ ${branchName}`)
+  const workdir = await setupRevisionWorkspace(taskId, repo.full_name, branchName)
+  await addLog(taskId, 'info', 'Workspace ready')
+
+  checkCancel(taskId)
+  await addLog(taskId, 'info', `Coding with ${coderModelId}`)
+
+  const coderResult = await runCoderLoop(
+    workdir, taskId, task.title, task.body, task.plan_md ?? '',
+    [], coderModelId, coderEffort, feedback, getAbortSignal(taskId),
+  )
+  totalIn += coderResult.usage.inputTokens
+  totalOut += coderResult.usage.outputTokens
+  totalCost += coderResult.usage.costUsd
+
+  checkCancel(taskId)
+  const dispatchConfig = loadDispatchConfig(workdir)
+  const maxDiff = dispatchConfig.max_diff_lines ?? 800
+
+  const diffLines = getDiffLineCount(workdir)
+  if (diffLines > maxDiff) {
+    throw new Error(`diff too large (${diffLines} lines > ${maxDiff}) — needs human decomposition`)
+  }
+
+  if (dispatchConfig.paths_off_limits?.length) {
+    const changed = getChangedFiles(workdir)
+    const blocked = changed.filter((f) => matchesAnyGlob(f, dispatchConfig.paths_off_limits!))
+    if (blocked.length > 0) throw new Error(`edited protected path(s): ${blocked.join(', ')}`)
+  }
+
+  await db.update(tasks).set({ status: 'verifying' }).where(eq(tasks.id, taskId))
+  await addLog(taskId, 'info', 'Running verify steps')
+
+  let verifyResult = runAllVerifySteps(workdir, dispatchConfig)
+  if (!verifyResult.passed && verifyResult.failedStep) {
+    await addLog(taskId, 'warn', `Verify failed: ${verifyResult.failedStep.name} — retrying with coder`)
+    const fixNotes = `${feedback}\n\nAdditionally, this verify step failed:\n\`${verifyResult.failedStep.run}\`\n\nOutput (last 200 lines):\n${verifyResult.failedStep.output}`
+
+    await db.update(tasks).set({ status: 'coding' }).where(eq(tasks.id, taskId))
+    const fixResult = await runCoderLoop(
+      workdir, taskId, task.title, task.body, task.plan_md ?? '',
+      [], coderModelId, coderEffort, fixNotes, getAbortSignal(taskId),
+    )
+    totalIn += fixResult.usage.inputTokens
+    totalOut += fixResult.usage.outputTokens
+    totalCost += fixResult.usage.costUsd
+
+    await db.update(tasks).set({ status: 'verifying' }).where(eq(tasks.id, taskId))
+    verifyResult = runAllVerifySteps(workdir, dispatchConfig)
+    if (!verifyResult.passed && verifyResult.failedStep) {
+      throw new Error(`verify failed: ${verifyResult.failedStep.name}`)
+    }
+  }
+  await addLog(taskId, 'info', 'All verify steps passed')
+
+  if (getDiffLineCount(workdir) === 0) {
+    throw new Error('coder produced no changes — nothing to push')
+  }
+
+  checkCancel(taskId)
+  await db.update(tasks).set({ status: 'pushing' }).where(eq(tasks.id, taskId))
+
+  const authorEmail = `${profile.github_user_id}+${profile.github_login}@users.noreply.github.com`
+  const commitTitle = deriveCommitTitle(feedback)
+  const commitBody = feedback.includes('\n') ? feedback : ''
+  const commitMsg = commitBody ? `${commitTitle}\n\n${commitBody}` : commitTitle
+  stageAndCommit(workdir, commitMsg, profile.github_login, authorEmail)
+  await addLog(taskId, 'info', `Committed: ${commitTitle}`)
+
+  pushBranch(workdir, branchName, repo.full_name)
+  await addLog(taskId, 'info', `Pushed ${branchName}`)
+
+  const diffSummary = getDiffStat(workdir)
+  const prevCost = Number(task.cost_usd ?? 0)
+  await db.update(tasks).set({
+    status: 'done',
+    diff_summary: diffSummary,
+    finished_at: new Date(),
+    revision_feedback: null,
+    cost_usd: (prevCost + totalCost).toFixed(4),
+    tokens_in: (task.tokens_in ?? 0) + totalIn,
+    tokens_out: (task.tokens_out ?? 0) + totalOut,
+  }).where(eq(tasks.id, taskId))
+
+  if (task.github_project_node_id) {
+    try {
+      const ctx = await getIssueProjectStatus(task.github_issue_node_id, task.github_project_node_id)
+      const option = ctx?.options.find((o) => o.name.toLowerCase() === 'code review')
+      if (ctx && option) {
+        await setIssueProjectStatus(task.github_project_node_id, ctx.projectItemId, ctx.statusFieldId, option.id)
+        await addLog(taskId, 'info', `Project status → Code Review`)
+      }
+    } catch (err) {
+      log.warn({ err, taskId }, 'failed to set project status')
+      await addLog(taskId, 'warn', `Could not set project status: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
+    }
+  }
+
+  await addLog(taskId, 'info', `Revision done — PR: ${task.pr_url}`)
+  log.info({ taskId, prUrl: task.pr_url, totalCost }, 'revision complete')
+  return workdir
+}
+
 export async function runTask(taskId: number, userId: string): Promise<void> {
   setCurrentTask(taskId)
   let workdir: string | null = null
@@ -69,6 +204,11 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     }
 
     checkCancel(taskId)
+
+    if (task.revision_feedback && task.branch_name && task.pr_number) {
+      workdir = await runRevision(taskId, task, profile, repo)
+      return
+    }
 
     const models = (profile.models ?? {}) as ProfileModels
     // The real branch name (type prefix + issue# + user-facing slug) is determined

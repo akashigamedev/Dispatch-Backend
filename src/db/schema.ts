@@ -103,6 +103,7 @@ export const tasks = pgTable(
     plan_md: text('plan_md'),
     diff_summary: text('diff_summary'),
     failure_reason: text('failure_reason'),
+    revision_feedback: text('revision_feedback'),
     cost_usd: numeric('cost_usd', { precision: 8, scale: 4 }).notNull().default('0'),
     tokens_in: bigint('tokens_in', { mode: 'number' }).notNull().default(0),
     tokens_out: bigint('tokens_out', { mode: 'number' }).notNull().default(0),

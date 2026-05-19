@@ -35,6 +35,25 @@ export async function setupWorkspace(
   return dir
 }
 
+export async function setupRevisionWorkspace(
+  taskId: number,
+  repoFullName: string,
+  branchName: string,
+): Promise<string> {
+  const dir = workspacePath(taskId)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+
+  const cloneUrl = getCloneUrl(repoFullName)
+  execSync(`git clone --depth 50 --branch "${branchName}" "${cloneUrl}" .`, {
+    cwd: dir,
+    stdio: 'pipe',
+    timeout: 120_000,
+  })
+
+  return dir
+}
+
 export function cleanupWorkspace(taskId: number): void {
   try {
     rmSync(workspacePath(taskId), { recursive: true, force: true })

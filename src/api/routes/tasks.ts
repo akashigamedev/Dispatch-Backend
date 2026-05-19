@@ -8,6 +8,9 @@ import { runWorkerTick } from '../../scheduler/worker.js'
 import { findOrCreateRepo, parseLabels } from '../../scheduler/poller.js'
 import { AppError } from '../../util/errors.js'
 import { createIssueAndAddToProject } from '../../github/createIssue.js'
+import { getPRState, postPRComment } from '../../github/pulls.js'
+import { getIssueProjectStatus, setIssueProjectStatus } from '../../github/issueStatus.js'
+import { log } from '../../log.js'
 
 const router = Router()
 
@@ -292,6 +295,77 @@ router.post('/tasks/:id/cancel', requireAuth, async (req, res) => {
     await db.update(tasks).set({ status: 'cancelled', finished_at: new Date() }).where(eq(tasks.id, taskId))
     res.json({ ok: true, message: 'cancelled' })
   }
+})
+
+const redoSchema = z.object({
+  feedback: z.string().trim().min(1, 'feedback is required').max(8000),
+})
+
+router.post('/tasks/:id/redo', requireAuth, async (req, res) => {
+  const userId = req.user.id
+  const taskId = Number(req.params.id)
+  const parsed = redoSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() })
+    return
+  }
+  const feedback = parsed.data.feedback
+
+  const [task] = await db
+    .select({
+      id: tasks.id,
+      status: tasks.status,
+      prNumber: tasks.pr_number,
+      branchName: tasks.branch_name,
+      repoFullName: repos.full_name,
+      issueNodeId: tasks.github_issue_node_id,
+      projectNodeId: tasks.github_project_node_id,
+    })
+    .from(tasks)
+    .leftJoin(repos, eq(repos.id, tasks.repo_id))
+    .where(and(eq(tasks.id, taskId), eq(tasks.user_id, userId)))
+
+  if (!task) throw new AppError(404, 'task not found')
+  if (task.status !== 'done') {
+    throw new AppError(400, `task is not done (status: ${task.status})`)
+  }
+  if (!task.prNumber || !task.branchName || !task.repoFullName) {
+    throw new AppError(400, 'task has no PR to revise')
+  }
+
+  const prState = await getPRState(task.repoFullName, task.prNumber)
+  if (prState.merged) throw new AppError(400, 'PR is already merged — open a new task for further changes')
+  if (prState.state === 'closed') throw new AppError(400, 'PR is closed — open a new task instead')
+
+  await postPRComment(task.repoFullName, task.prNumber, feedback)
+
+  if (task.projectNodeId) {
+    try {
+      const ctx = await getIssueProjectStatus(task.issueNodeId, task.projectNodeId)
+      const option = ctx?.options.find((o) => o.name.toLowerCase() === 'in progress')
+      if (ctx && option) {
+        await setIssueProjectStatus(task.projectNodeId, ctx.projectItemId, ctx.statusFieldId, option.id)
+      }
+    } catch (err) {
+      log.warn({ err, taskId }, 'redo: failed to set project status')
+    }
+  }
+
+  await db
+    .update(tasks)
+    .set({
+      status: 'queued',
+      revision_feedback: feedback,
+      finished_at: null,
+      started_at: null,
+      failure_reason: null,
+      enqueued_at: new Date(),
+    })
+    .where(eq(tasks.id, taskId))
+
+  runWorkerTick(userId).catch(() => { /* logged inside worker */ })
+
+  res.json({ ok: true, taskId, status: 'queued' })
 })
 
 router.get('/tasks/:id/logs', requireAuth, async (req, res) => {

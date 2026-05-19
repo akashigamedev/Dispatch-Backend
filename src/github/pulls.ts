@@ -57,6 +57,18 @@ export function buildReviewerComment(verify: VerifyResult, planMd: string): stri
   ].join('\n')
 }
 
+export interface PRState {
+  state: 'open' | 'closed'
+  merged: boolean
+}
+
+export async function getPRState(repoFullName: string, prNumber: number): Promise<PRState> {
+  const [owner, repo] = repoFullName.split('/')
+  const octokit = getOctokit()
+  const { data } = await withGithubRetry(() => octokit.rest.pulls.get({ owner, repo, pull_number: prNumber }))
+  return { state: data.state as 'open' | 'closed', merged: data.merged }
+}
+
 export async function postPRComment(repoFullName: string, prNumber: number, body: string): Promise<void> {
   const [owner, repo] = repoFullName.split('/')
   const octokit = getOctokit()
