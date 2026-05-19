@@ -31,8 +31,8 @@ interface IssueSearchResponse {
 }
 
 const QUERY = `
-  query GetAssignedIssues($cursor: String) {
-    search(query: "is:issue is:open assignee:@me", type: ISSUE, first: 50, after: $cursor) {
+  query GetAssignedIssues($cursor: String, $q: String!) {
+    search(query: $q, type: ISSUE, first: 50, after: $cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
         ... on Issue {
@@ -71,15 +71,18 @@ function isIssue(node: Partial<IssueSearchNode>): node is IssueSearchNode {
 }
 
 export async function fetchAssignedIssues(
-  opts: { includeAllStatuses?: boolean } = {},
+  opts: { includeAllStatuses?: boolean; includeClosed?: boolean } = {},
 ): Promise<DiscoveredIssue[]> {
   const graphql = getGraphql()
   const discovered: DiscoveredIssue[] = []
   let cursor: string | null = null
+  const q = opts.includeClosed
+    ? 'is:issue assignee:@me'
+    : 'is:issue is:open assignee:@me'
 
   do {
     const data: IssueSearchResponse = await withGithubRetry(() =>
-      graphql<IssueSearchResponse>(QUERY, { cursor: cursor ?? undefined }),
+      graphql<IssueSearchResponse>(QUERY, { cursor: cursor ?? undefined, q }),
     )
 
     for (const node of data.search.nodes) {

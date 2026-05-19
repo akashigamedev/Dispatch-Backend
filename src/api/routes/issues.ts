@@ -146,7 +146,7 @@ router.get('/issues/:nodeId', requireAuth, async (req, res) => {
 
   let issues: DiscoveredIssue[]
   try {
-    issues = await fetchAssignedIssues({ includeAllStatuses: true })
+    issues = await fetchAssignedIssues({ includeAllStatuses: true, includeClosed: true })
   } catch (err) {
     log.error({ err, userId }, 'fetchAssignedIssues failed')
     throw new AppError(502, 'failed to fetch issues from GitHub')
