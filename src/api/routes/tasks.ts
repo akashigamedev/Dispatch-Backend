@@ -8,7 +8,7 @@ import { runWorkerTick } from '../../scheduler/worker.js'
 import { findOrCreateRepo, parseLabels } from '../../scheduler/poller.js'
 import { AppError } from '../../util/errors.js'
 import { createIssueAndAddToProject } from '../../github/createIssue.js'
-import { getPRState, postPRComment } from '../../github/pulls.js'
+import { getPRState } from '../../github/pulls.js'
 import { getIssueProjectStatus, setIssueProjectStatus } from '../../github/issueStatus.js'
 import { log } from '../../log.js'
 
@@ -337,8 +337,6 @@ router.post('/tasks/:id/redo', requireAuth, async (req, res) => {
   if (prState.merged) throw new AppError(400, 'PR is already merged — open a new task for further changes')
   if (prState.state === 'closed') throw new AppError(400, 'PR is closed — open a new task instead')
 
-  await postPRComment(task.repoFullName, task.prNumber, feedback)
-
   if (task.projectNodeId) {
     try {
       const ctx = await getIssueProjectStatus(task.issueNodeId, task.projectNodeId)
@@ -380,12 +378,22 @@ router.get('/tasks/:id/logs', requireAuth, async (req, res) => {
 
   if (!task) throw new AppError(404, 'task not found')
 
-  const logs = await db
-    .select()
-    .from(taskLogs)
-    .where(and(eq(taskLogs.task_id, taskId), since > 0 ? gt(taskLogs.id, since) : sql`true`))
-    .orderBy(asc(taskLogs.id))
-    .limit(200)
+  const logs =
+    since > 0
+      ? await db
+          .select()
+          .from(taskLogs)
+          .where(and(eq(taskLogs.task_id, taskId), gt(taskLogs.id, since)))
+          .orderBy(asc(taskLogs.id))
+          .limit(200)
+      : (
+          await db
+            .select()
+            .from(taskLogs)
+            .where(eq(taskLogs.task_id, taskId))
+            .orderBy(desc(taskLogs.id))
+            .limit(200)
+        ).reverse()
 
   res.json({ logs })
 })

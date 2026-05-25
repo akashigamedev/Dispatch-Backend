@@ -18,29 +18,39 @@ interface UserReposResponseItem {
 }
 
 export async function listWritableRepos(): Promise<WritableRepo[]> {
-  const octokit = getOctokit()
   const out: WritableRepo[] = []
   let page = 1
   for (;;) {
-    const resp = await withGithubRetry(() =>
-      octokit.request('GET /user/repos', {
-        affiliation: 'owner,collaborator,organization_member',
-        per_page: 100,
-        page,
-        sort: 'updated',
-      }),
-    )
-    const data = resp.data as UserReposResponseItem[]
-    for (const r of data) {
-      if (r.archived || r.disabled) continue
-      if (!r.permissions?.push && !r.permissions?.admin && !r.permissions?.maintain) continue
-      out.push({ fullName: r.full_name, githubId: r.id, defaultBranch: r.default_branch })
-    }
-    if (data.length < 100) break
+    const { repos, hasMore } = await listWritableReposPage(page, 100)
+    out.push(...repos)
+    if (!hasMore) break
     page += 1
     if (page > 10) break // safety cap (1000 repos)
   }
   return out
+}
+
+export async function listWritableReposPage(
+  page: number,
+  perPage: number,
+): Promise<{ repos: WritableRepo[]; hasMore: boolean }> {
+  const octokit = getOctokit()
+  const resp = await withGithubRetry(() =>
+    octokit.request('GET /user/repos', {
+      affiliation: 'owner,collaborator,organization_member',
+      per_page: perPage,
+      page,
+      sort: 'updated',
+    }),
+  )
+  const data = resp.data as UserReposResponseItem[]
+  const repos: WritableRepo[] = []
+  for (const r of data) {
+    if (r.archived || r.disabled) continue
+    if (!r.permissions?.push && !r.permissions?.admin && !r.permissions?.maintain) continue
+    repos.push({ fullName: r.full_name, githubId: r.id, defaultBranch: r.default_branch })
+  }
+  return { repos, hasMore: data.length === perPage }
 }
 
 interface ViewerResponse {
