@@ -23,6 +23,28 @@ export function pushBranch(workdir: string, branchName: string, repoFullName: st
   })
 }
 
+/**
+ * DANGEROUS: push the local feature branch's commits directly to the remote
+ * `targetBranch` (typically the repo's base branch like `dev`). No force flag —
+ * if the remote base has diverged this fails loudly instead of overwriting work.
+ */
+export function pushBranchTo(
+  workdir: string,
+  localBranch: string,
+  targetBranch: string,
+  repoFullName: string,
+): void {
+  const token = env.GITHUB_PAT ?? ''
+  const authedUrl = `https://x-access-token:${token}@github.com/${repoFullName}.git`
+  execSync(`git remote set-url origin "${authedUrl}"`, { cwd: workdir, stdio: 'pipe' })
+  execSync(`git push origin "${localBranch}:${targetBranch}"`, {
+    cwd: workdir,
+    stdio: 'pipe',
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    timeout: 60_000,
+  })
+}
+
 export function getDiffStat(workdir: string): string {
   try {
     return execSync('git diff HEAD~1 HEAD --stat', { cwd: workdir, stdio: 'pipe' }).toString().trim()

@@ -17,6 +17,7 @@ import {
 import {
   stageAndCommit,
   pushBranch,
+  pushBranchTo,
   getDiffStat,
   getDiffLineCount,
   getChangedFiles,
@@ -246,6 +247,20 @@ export async function runMultiRepoTask(taskId: number, userId: string): Promise<
     }
 
     // ── 4. All repos done → create one issue per repo at "Code Review" ───────
+    if (profile.dangerous_mode === true) {
+      await db.update(tasks).set({
+        status: 'done',
+        repos: repoEntries,
+        finished_at: new Date(),
+        cost_usd: totalCost.toFixed(4),
+        tokens_in: totalIn,
+        tokens_out: totalOut,
+      }).where(eq(tasks.id, taskId))
+      await addLog(taskId, 'info', 'Multi-repo task complete (dangerous mode — pushed directly to base branches, no issues created)')
+      log.info({ taskId, repoCount: repoEntries.length, totalCost }, 'multi-repo task complete (dangerous mode)')
+      return
+    }
+
     await addLog(taskId, 'info', `All repos succeeded — creating ${repoEntries.length} Code Review issue(s)`)
     for (const entry of repoEntries) {
       try {
@@ -468,28 +483,37 @@ async function runOneRepo(a: RunOneRepoArgs): Promise<void> {
   stageAndCommit(clone.workdir, commitMsg, profile.github_login, authorEmail)
   await repoLog(taskId, repoFullName, 'info', `Committed: ${plannedSub.commit_title}`)
 
+  const dangerous = profile.dangerous_mode === true
+  const diffSummary = getDiffStat(clone.workdir)
+
+  if (dangerous) {
+    await repoLog(taskId, repoFullName, 'warn', `DANGEROUS MODE: pushing directly to ${entry.base_branch} (skipping PR)`)
+    pushBranchTo(clone.workdir, clone.branchName, entry.base_branch, repoFullName)
+    await repoLog(taskId, repoFullName, 'info', `Pushed → ${entry.base_branch}`)
+
+    upstreamDiffs.set(entry.repo_id, { repoFullName, diff: getDiff(clone.workdir) })
+    await setRepoState(taskId, repoEntries, entry.repo_id, {
+      status: 'done' as RepoPhaseStatus,
+      diff_summary: diffSummary,
+    })
+    return
+  }
+
   pushBranch(clone.workdir, clone.branchName, repoFullName)
   await repoLog(taskId, repoFullName, 'info', `Pushed ${clone.branchName}`)
 
-  // For multi-repo tasks we open the PR with NO "Closes #" trailer (no upstream issue exists yet).
-  // openPR's buildPRBody appends "Closes #N" using issueNumber — we pass 0 and strip it in the body.
-  const prBodyBase = plannedSub.commit_body
-  // Reuse openPR by passing a sentinel and rewriting; simpler: import the underlying octokit call.
-  // To avoid touching openPR's signature, we monkey-build the body in commitBody and then strip "Closes #0".
   const { prUrl, prNumber } = await openPRMulti({
     repoFullName,
     baseBranch: entry.base_branch,
     branchName: clone.branchName,
     commitTitle: plannedSub.commit_title,
-    commitBody: prBodyBase,
+    commitBody: plannedSub.commit_body,
   })
 
   await repoLog(taskId, repoFullName, 'info', `PR opened: ${prUrl}`)
 
-  // Capture this repo's diff so downstream repos can see what we actually built.
   upstreamDiffs.set(entry.repo_id, { repoFullName, diff: getDiff(clone.workdir) })
 
-  const diffSummary = getDiffStat(clone.workdir)
   await setRepoState(taskId, repoEntries, entry.repo_id, {
     status: 'done' as RepoPhaseStatus,
     pr_url: prUrl,

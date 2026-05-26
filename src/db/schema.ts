@@ -38,6 +38,10 @@ export const profiles = pgTable('profiles', {
   // reserved for future GitHub App mode; PAT mode does not populate this
   github_installation_id: bigint('github_installation_id', { mode: 'number' }),
   anthropic_resume_after: timestamp('anthropic_resume_after', { withTimezone: true }),
+  // When true, the worker skips opening a PR and instead pushes the feature
+  // branch's commits directly to the repo's base branch (e.g. dev). No force
+  // push — if base has diverged the push fails. Disabled by default.
+  dangerous_mode: boolean('dangerous_mode').notNull().default(false),
   models: jsonb('models').notNull().default({
     planner: { id: 'claude-opus-4-7', thinking: 'medium' },
     sizer: { id: 'claude-opus-4-7', thinking: 'low' },

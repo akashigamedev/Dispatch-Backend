@@ -20,11 +20,12 @@ const modelsSchema = z.object({
 
 const settingsUpdateSchema = z.object({
   models: modelsSchema.optional(),
+  dangerousMode: z.boolean().optional(),
 })
 
 router.get('/settings', requireAuth, async (req, res) => {
   const [profile] = await db
-    .select({ models: profiles.models })
+    .select({ models: profiles.models, dangerous_mode: profiles.dangerous_mode })
     .from(profiles)
     .where(eq(profiles.id, req.user.id))
     .limit(1)
@@ -34,7 +35,7 @@ router.get('/settings', requireAuth, async (req, res) => {
     return
   }
 
-  res.json(profile)
+  res.json({ models: profile.models, dangerousMode: profile.dangerous_mode })
 })
 
 router.put('/settings', requireAuth, async (req, res) => {
@@ -44,27 +45,36 @@ router.put('/settings', requireAuth, async (req, res) => {
     return
   }
 
-  const { models } = parsed.data
-  if (models === undefined) {
+  const { models, dangerousMode } = parsed.data
+  if (models === undefined && dangerousMode === undefined) {
     res.status(400).json({ error: 'no fields to update' })
     return
   }
 
-  const [current] = await db
-    .select({ models: profiles.models })
-    .from(profiles)
-    .where(eq(profiles.id, req.user.id))
-    .limit(1)
+  const update: { models?: Record<string, Record<string, string>>; dangerous_mode?: boolean } = {}
 
-  const currentModels = (current?.models ?? {}) as Record<string, Record<string, string>>
-  const mergedModels: Record<string, Record<string, string>> = { ...currentModels }
-  for (const role of ['planner', 'coder', 'sizer', 'reviewer'] as const) {
-    if (models[role] !== undefined) {
-      mergedModels[role] = { ...(currentModels[role] ?? {}), ...models[role] }
+  if (models !== undefined) {
+    const [current] = await db
+      .select({ models: profiles.models })
+      .from(profiles)
+      .where(eq(profiles.id, req.user.id))
+      .limit(1)
+
+    const currentModels = (current?.models ?? {}) as Record<string, Record<string, string>>
+    const mergedModels: Record<string, Record<string, string>> = { ...currentModels }
+    for (const role of ['planner', 'coder', 'sizer', 'reviewer'] as const) {
+      if (models[role] !== undefined) {
+        mergedModels[role] = { ...(currentModels[role] ?? {}), ...models[role] }
+      }
     }
+    update.models = mergedModels
   }
 
-  await db.update(profiles).set({ models: mergedModels }).where(eq(profiles.id, req.user.id))
+  if (dangerousMode !== undefined) {
+    update.dangerous_mode = dangerousMode
+  }
+
+  await db.update(profiles).set(update).where(eq(profiles.id, req.user.id))
 
   res.json({ ok: true })
 })

@@ -10,7 +10,7 @@ import { log } from '../log.js'
 import { detectModelLimit } from '../util/claudeError.js'
 import type { ClaudeEffort } from '../claude/client.js'
 import { CancelError, clearCancel, getAbortSignal, isCancelRequested, setCurrentTask } from './cancel.js'
-import { stageAndCommit, pushBranch, getDiffStat, getDiffLineCount, getChangedFiles, getWorkingDiff, renameBranch } from './git.js'
+import { stageAndCommit, pushBranch, pushBranchTo, getDiffStat, getDiffLineCount, getChangedFiles, getWorkingDiff, renameBranch } from './git.js'
 import { setupWorkspace, setupRevisionWorkspace, cleanupWorkspace } from './workspace.js'
 import { loadDispatchConfig, runAllVerifySteps } from './verify.js'
 
@@ -424,20 +424,46 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     await db.update(tasks).set({ status: 'pushing' }).where(eq(tasks.id, taskId))
 
     const authorEmail = `${profile.github_user_id}+${profile.github_login}@users.noreply.github.com`
-    const commitMsg = [
-      planResult.commit_title,
-      '',
-      planResult.commit_body,
-      '',
-      `Closes #${issueNumber}`,
-    ].join('\n')
+    const dangerous = profile.dangerous_mode === true
+    const commitMsg = dangerous
+      ? [planResult.commit_title, '', planResult.commit_body].join('\n')
+      : [planResult.commit_title, '', planResult.commit_body, '', `Closes #${issueNumber}`].join('\n')
     stageAndCommit(workdir, commitMsg, profile.github_login, authorEmail)
     await addLog(taskId, 'info', `Committed: ${planResult.commit_title}`)
+
+    const diffSummary = getDiffStat(workdir)
+
+    if (dangerous) {
+      await addLog(taskId, 'warn', `DANGEROUS MODE: pushing directly to ${repo.base_branch} (skipping PR)`)
+      pushBranchTo(workdir, branchName, repo.base_branch, repo.full_name)
+      await addLog(taskId, 'info', `Pushed → ${repo.base_branch}`)
+
+      await db.update(tasks).set({
+        status: 'done',
+        diff_summary: diffSummary,
+        finished_at: new Date(),
+        cost_usd: totalCost.toFixed(4),
+        tokens_in: totalIn,
+        tokens_out: totalOut,
+      }).where(eq(tasks.id, taskId))
+
+      try {
+        await closeIssue(repo.full_name, issueNumber)
+        await addLog(taskId, 'info', `Closed issue #${issueNumber}`)
+      } catch (err) {
+        log.warn({ err, taskId }, 'failed to close issue')
+        await addLog(taskId, 'warn', `Could not close issue: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
+      }
+
+      // No PR → no "Code Review" status. Issue is closed as the work is merged.
+      await addLog(taskId, 'info', `Done (dangerous mode — merged to ${repo.base_branch})`)
+      log.info({ taskId, baseBranch: repo.base_branch, totalCost }, 'task complete (dangerous mode)')
+      return
+    }
 
     pushBranch(workdir, branchName, repo.full_name)
     await addLog(taskId, 'info', `Pushed ${branchName}`)
 
-    const diffSummary = getDiffStat(workdir)
     const { prUrl, prNumber } = await openPR({
       repoFullName: repo.full_name,
       baseBranch: repo.base_branch,
