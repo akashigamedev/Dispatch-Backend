@@ -200,7 +200,7 @@ async function runRevision(
     tokens_out: (task.tokens_out ?? 0) + totalOut,
   }).where(eq(tasks.id, taskId))
 
-  if (task.github_project_node_id) {
+  if (task.github_project_node_id && task.github_issue_node_id) {
     try {
       const ctx = await getIssueProjectStatus(task.github_issue_node_id, task.github_project_node_id)
       const option = ctx?.options.find((o) => o.name.toLowerCase() === 'code review')
@@ -240,6 +240,21 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       return
     }
 
+    if (task.kind === 'multi') {
+      const { runMultiRepoTask } = await import('./runMulti.js')
+      await runMultiRepoTask(taskId, userId)
+      return
+    }
+
+    // Single-task path: github_issue_* fields are guaranteed present (issue-driven flow).
+    if (!task.github_issue_node_id || task.github_issue_number == null || !task.github_issue_url) {
+      log.error({ taskId }, 'runTask: single task missing github issue fields')
+      await db.update(tasks).set({ status: 'failed', failure_reason: 'missing issue fields', finished_at: new Date() }).where(eq(tasks.id, taskId)).catch(() => null)
+      return
+    }
+    const issueNodeId = task.github_issue_node_id
+    const issueNumber = task.github_issue_number
+
     checkCancel(taskId)
 
     if (task.revision_feedback && task.branch_name && task.pr_number) {
@@ -278,7 +293,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     totalOut += planResult.usage.outputTokens
     totalCost += planResult.usage.costUsd
 
-    branchName = `${planResult.change_type}/${task.github_issue_number}-${planResult.branch_slug}`
+    branchName = `${planResult.change_type}/${issueNumber}-${planResult.branch_slug}`
     renameBranch(workdir, planningBranch, branchName)
     await db.update(tasks).set({ plan_md: planResult.plan_md, branch_name: branchName }).where(eq(tasks.id, taskId))
     await addLog(taskId, 'info', `Branch → ${branchName}`)
@@ -292,7 +307,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
         '',
         `_Confidence: ${(planResult.confidence * 100).toFixed(0)}%_`,
       ].join('\n')
-      await commentOnIssue(repo.full_name, task.github_issue_number, body)
+      await commentOnIssue(repo.full_name, issueNumber, body)
       await db.update(tasks)
         .set({ status: 'awaiting_input', finished_at: new Date(), cost_usd: totalCost.toFixed(4), tokens_in: totalIn, tokens_out: totalOut })
         .where(eq(tasks.id, taskId))
@@ -414,7 +429,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       '',
       planResult.commit_body,
       '',
-      `Closes #${task.github_issue_number}`,
+      `Closes #${issueNumber}`,
     ].join('\n')
     stageAndCommit(workdir, commitMsg, profile.github_login, authorEmail)
     await addLog(taskId, 'info', `Committed: ${planResult.commit_title}`)
@@ -427,7 +442,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       repoFullName: repo.full_name,
       baseBranch: repo.base_branch,
       branchName,
-      issueNumber: task.github_issue_number,
+      issueNumber: issueNumber,
       commitTitle: planResult.commit_title,
       commitBody: planResult.commit_body,
       githubLogin: profile.github_login,
@@ -452,8 +467,8 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     }).where(eq(tasks.id, taskId))
 
     try {
-      await closeIssue(repo.full_name, task.github_issue_number)
-      await addLog(taskId, 'info', `Closed issue #${task.github_issue_number}`)
+      await closeIssue(repo.full_name, issueNumber)
+      await addLog(taskId, 'info', `Closed issue #${issueNumber}`)
     } catch (err) {
       log.warn({ err, taskId }, 'failed to close issue')
       await addLog(taskId, 'warn', `Could not close issue: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
@@ -461,7 +476,7 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
 
     if (task.github_project_node_id) {
       try {
-        const ctx = await getIssueProjectStatus(task.github_issue_node_id, task.github_project_node_id)
+        const ctx = await getIssueProjectStatus(issueNodeId, task.github_project_node_id)
         const option = ctx?.options.find((o) => o.name.toLowerCase() === 'code review')
         if (ctx && option) {
           await setIssueProjectStatus(task.github_project_node_id, ctx.projectItemId, ctx.statusFieldId, option.id)

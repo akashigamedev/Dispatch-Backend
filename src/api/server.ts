@@ -7,6 +7,7 @@ import issuesRouter from './routes/issues.js'
 import settingsRouter from './routes/settings.js'
 import projectsRouter from './routes/projects.js'
 import createTaskRouter from './routes/createTask.js'
+import createMultiTaskRouter from './routes/createMultiTask.js'
 
 function requestLogger(req: Request, res: Response, next: NextFunction) {
   const start = Date.now()
@@ -31,6 +32,7 @@ export function createServer() {
   app.use(settingsRouter)
   app.use(projectsRouter)
   app.use(createTaskRouter)
+  app.use(createMultiTaskRouter)
 
   app.use(notFound)
   app.use(errorHandler)

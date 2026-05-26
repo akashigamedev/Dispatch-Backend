@@ -85,13 +85,25 @@ export const tasks = pgTable(
     user_id: uuid('user_id')
       .notNull()
       .references(() => profiles.id, { onDelete: 'cascade' }),
+    // 'single' = legacy issue-driven flow; 'multi' = new multi-repo flow (1+ repos, issues
+    // created only at the end). For 'multi', repo_id and github_issue_* are NULL and the
+    // per-repo state lives in the `repos` JSON column.
+    kind: text('kind').notNull().default('single'),
     repo_id: bigint('repo_id', { mode: 'number' }).references(() => repos.id, {
       onDelete: 'set null',
     }),
-    github_issue_node_id: text('github_issue_node_id').notNull(),
-    github_issue_number: integer('github_issue_number').notNull(),
-    github_issue_url: text('github_issue_url').notNull(),
+    github_issue_node_id: text('github_issue_node_id'),
+    github_issue_number: integer('github_issue_number'),
+    github_issue_url: text('github_issue_url'),
     github_project_node_id: text('github_project_node_id'),
+    // For multi tasks: where the eventual Code Review issues are created.
+    project_node_id_target: text('project_node_id_target'),
+    // For multi tasks: user-supplied free-form description (replaces issue body).
+    description: text('description'),
+    // For multi tasks: shared contract / API spec emitted by the planner.
+    contract_md: text('contract_md'),
+    // For multi tasks: per-repo state. Shape: TaskRepoEntry[] (see types/multiRepo.ts).
+    repos: jsonb('repos'),
     title: text('title').notNull(),
     body: text('body'),
     size: taskSizeEnum('size'),

@@ -345,3 +345,123 @@ export async function createIssueAndAddToProject(
     projectItemId,
   }
 }
+
+interface ProjectStatusFieldResponse {
+  node: {
+    field: {
+      id: string
+      options: Array<{ id: string; name: string }>
+    } | null
+  } | null
+}
+
+/**
+ * Create a GitHub issue, add it to a Project (v2), and set its Status field to
+ * the named option (e.g. "Code Review"). Used by multi-repo task completion.
+ *
+ * Returns the issue node id / number / url; does not write to the DB.
+ */
+export async function createIssueForCompletedTask(input: {
+  repoFullName: string
+  title: string
+  body: string
+  projectNodeId: string
+  statusOptionName: string  // case-insensitive
+}): Promise<{
+  issueNodeId: string
+  issueNumber: number
+  issueUrl: string
+  statusSet: boolean
+}> {
+  const octokit = getOctokit()
+  const graphql = getGraphql()
+
+  const [owner, name] = input.repoFullName.split('/')
+  if (!owner || !name) throw new Error(`invalid repo name: ${input.repoFullName}`)
+
+  const repoResp = (await withGithubRetry(() =>
+    octokit.request('GET /repos/{owner}/{repo}', { owner, repo: name }),
+  )) as RepoGetResponse
+  const repoNodeId = repoResp.data.node_id
+
+  const viewer = await getViewer()
+
+  const created: CreateIssueMutationResponse = await withGithubRetry(() =>
+    graphql<CreateIssueMutationResponse>(
+      `mutation CreateIssue($repositoryId: ID!, $title: String!, $body: String, $assigneeIds: [ID!]) {
+        createIssue(input: { repositoryId: $repositoryId, title: $title, body: $body, assigneeIds: $assigneeIds }) {
+          issue { id number url }
+        }
+      }`,
+      {
+        repositoryId: repoNodeId,
+        title: input.title,
+        body: input.body,
+        assigneeIds: [viewer.nodeId],
+      },
+    ),
+  )
+  const issue = created.createIssue.issue
+
+  const added: AddProjectItemResponse = await withGithubRetry(() =>
+    graphql<AddProjectItemResponse>(
+      `mutation AddItem($projectId: ID!, $contentId: ID!) {
+        addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+          item { id }
+        }
+      }`,
+      { projectId: input.projectNodeId, contentId: issue.id },
+    ),
+  )
+  const projectItemId = added.addProjectV2ItemById.item.id
+
+  // Look up the Status field + its options on this project, find the requested option, set it.
+  let statusSet = false
+  try {
+    const fieldResp: ProjectStatusFieldResponse = await withGithubRetry(() =>
+      graphql<ProjectStatusFieldResponse>(
+        `query StatusField($id: ID!) {
+          node(id: $id) {
+            ... on ProjectV2 {
+              field(name: "Status") {
+                ... on ProjectV2SingleSelectField {
+                  id
+                  options { id name }
+                }
+              }
+            }
+          }
+        }`,
+        { id: input.projectNodeId },
+      ),
+    )
+    const field = fieldResp.node?.field
+    if (field) {
+      const want = input.statusOptionName.toLowerCase()
+      const option = field.options.find((o) => o.name.toLowerCase() === want)
+      if (option) {
+        await withGithubRetry(() =>
+          graphql(
+            `mutation SetStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }`,
+            { projectId: input.projectNodeId, itemId: projectItemId, fieldId: field.id, optionId: option.id },
+          ),
+        )
+        statusSet = true
+      }
+    }
+  } catch {
+    // Best-effort — issue still exists at default status if this fails.
+  }
+
+  return {
+    issueNodeId: issue.id,
+    issueNumber: issue.number,
+    issueUrl: issue.url,
+    statusSet,
+  }
+}

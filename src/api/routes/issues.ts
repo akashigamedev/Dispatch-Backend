@@ -64,6 +64,7 @@ async function fetchTaskMap(userId: string, issueNodeIds: string[]): Promise<Map
 
   const map = new Map<string, IssueItem['task']>()
   for (const r of rows) {
+    if (!r.issueNodeId) continue
     map.set(r.issueNodeId, {
       id: r.id,
       status: r.status,

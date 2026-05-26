@@ -167,6 +167,7 @@ router.post('/tasks/create', requireAuth, async (req, res) => {
   if (!p.start) {
     res.json({
       ok: true,
+      issueNodeId: created.issueNodeId,
       issueNumber: created.issueNumber,
       issueUrl: created.issueUrl,
       taskId: null,
@@ -194,6 +195,7 @@ router.post('/tasks/create', requireAuth, async (req, res) => {
 
   res.json({
     ok: true,
+    issueNodeId: created.issueNodeId,
     issueNumber: created.issueNumber,
     issueUrl: created.issueUrl,
     taskId: inserted.id,
@@ -232,6 +234,7 @@ router.get('/tasks', requireAuth, async (req, res) => {
 
   const baseSelect = {
     id: tasks.id,
+    kind: tasks.kind,
     title: tasks.title,
     status: tasks.status,
     size: tasks.size,
@@ -242,6 +245,8 @@ router.get('/tasks', requireAuth, async (req, res) => {
     repoFullName: repos.full_name,
     prUrl: tasks.pr_url,
     prNumber: tasks.pr_number,
+    repos: tasks.repos,
+    contractMd: tasks.contract_md,
     enqueuedAt: tasks.enqueued_at,
     startedAt: tasks.started_at,
     finishedAt: tasks.finished_at,
@@ -337,7 +342,7 @@ router.post('/tasks/:id/redo', requireAuth, async (req, res) => {
   if (prState.merged) throw new AppError(400, 'PR is already merged — open a new task for further changes')
   if (prState.state === 'closed') throw new AppError(400, 'PR is closed — open a new task instead')
 
-  if (task.projectNodeId) {
+  if (task.projectNodeId && task.issueNodeId) {
     try {
       const ctx = await getIssueProjectStatus(task.issueNodeId, task.projectNodeId)
       const option = ctx?.options.find((o) => o.name.toLowerCase() === 'in progress')

@@ -136,6 +136,169 @@ export async function planTask(
   return { ...parsed, usage: usageFromResult(r) }
 }
 
+const multiRepoSubplanSchema = z.object({
+  repo_id: z.number(),
+  depends_on: z.array(z.number()).default([]),
+  plan_md: z.string(),
+  files_to_touch: z.array(z.string()).default([]),
+  branch_slug: z.string().regex(/^[a-z0-9-]+$/).max(40),
+  change_type: z.enum(CHANGE_TYPES),
+  commit_title: z.string().max(72),
+  commit_body: z.string(),
+})
+
+const multiRepoPlanSchema = z.object({
+  contract_md: z.string(),
+  repos: z.array(multiRepoSubplanSchema).min(1),
+  confidence: z.number().min(0).max(1),
+  clarifying_questions: z.array(z.string()).default([]),
+})
+
+export type MultiRepoSubplan = z.infer<typeof multiRepoSubplanSchema>
+
+export interface MultiRepoPlanResult {
+  contract_md: string
+  repos: MultiRepoSubplan[]
+  confidence: number
+  clarifying_questions: string[]
+  usage: UsageSummary
+}
+
+export async function planMultiRepoTask(
+  workspaceRoot: string,
+  repos: Array<{ repo_id: number; full_name: string; subdir: string }>,
+  title: string,
+  description: string,
+  modelId = 'claude-opus-4-7',
+  effort: ClaudeEffort = 'medium',
+): Promise<MultiRepoPlanResult> {
+  const repoList = repos
+    .map((r) => `- repo_id=${r.repo_id}, full_name=${r.full_name}, subdir=./${r.subdir}`)
+    .join('\n')
+
+  const prompt = [
+    'You are planning a coordinated change that spans MULTIPLE repositories that have been cloned',
+    'side-by-side into subdirectories of the current working directory.',
+    'Explore each repo with Read/Glob/Grep as needed. Read each repo\'s CLAUDE.md at its root if present.',
+    '',
+    'Your job is to:',
+    '  1) Design an explicit CONTRACT (API surface, shared types, integration points) that the repos must agree on.',
+    '  2) Emit a per-repo subplan that references that contract.',
+    '  3) Declare cross-repo dependencies: which repos must finish coding before others can start',
+    '     (typically the backend repo that exposes an API must finish before the frontend that consumes it).',
+    '',
+    'REPOS IN THIS TASK:',
+    repoList,
+    '',
+    'CRITICAL OUTPUT REQUIREMENT:',
+    'Your final assistant message MUST be a single JSON object and NOTHING ELSE.',
+    'No prose, no code fences, no preamble or trailing summary.',
+    '',
+    'JSON shape (all fields required):',
+    '{',
+    '  "contract_md": "markdown spec of the cross-repo contract: endpoints/types/integration points that the repos must agree on",',
+    '  "repos": [',
+    '    {',
+    '      "repo_id": <number>,           // must match one of the repo_ids above',
+    '      "depends_on": [<repo_id>, ...], // repo_ids that must finish coding BEFORE this repo. [] for leaf repos.',
+    '      "plan_md": "markdown plan for THIS repo only, referencing the contract above",',
+    '      "files_to_touch": ["path/relative/to/THIS/repo"],',
+    '      "branch_slug": "kebab-case, <=40 chars, user-facing intent (no type prefix, no issue number)",',
+    '      "change_type": "feat" | "fix" | "docs" | "refactor" | "perf" | "test" | "chore",',
+    '      "commit_title": "<change_type>: <summary>",  // <=72 chars, lowercase imperative, user-facing',
+    '      "commit_body": "..."                          // markdown, plain language for end users'
+    , '    }',
+    '  ],',
+    '  "confidence": 0.0,                  // 0.0-1.0; < 0.5 means you need clarification',
+    '  "clarifying_questions": []          // non-empty ONLY if confidence < 0.5',
+    '}',
+    '',
+    'RULES:',
+    '- depends_on must be a DAG (no cycles). Typically: frontend depends on backend.',
+    '- branch_slug, commit_title, commit_body — same user-POV rules as single-repo planning: no file/class names, lowercase imperative, user-visible language.',
+    '- files_to_touch paths must be relative to that repo\'s own root (not to the workspace root).',
+    '- The contract_md is the SINGLE SOURCE OF TRUTH for cross-repo agreements. Be precise: endpoint signatures, request/response shapes, shared type names, error semantics.',
+    '',
+    `## Task title\n${title}`,
+    '',
+    `## Task description\n${description}`,
+  ].join('\n')
+
+  const r = await spawnClaude({
+    prompt,
+    model: modelId,
+    cwd: workspaceRoot,
+    addDir: [workspaceRoot],
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch'],
+    appendSystemPrompt:
+      'You are a multi-repo planning subagent invoked by an automated pipeline. Your final message must be a single valid JSON object matching the schema in the user prompt — no prose, no markdown fences. The orchestrator parses this output programmatically.',
+    effort,
+    outputFormat: 'json',
+    maxTurns: 150,
+  })
+
+  const parsed: z.infer<typeof multiRepoPlanSchema> = (() => {
+    try {
+      const jsonMatch = r.result.match(/\{[\s\S]*\}/)
+      return multiRepoPlanSchema.parse(JSON.parse(jsonMatch?.[0] ?? r.result))
+    } catch {
+      log.warn({ raw: r.result.slice(0, 500) }, 'multi-repo planner: could not parse JSON response')
+      return {
+        contract_md: r.result || 'No contract generated.',
+        repos: repos.map((re) => ({
+          repo_id: re.repo_id,
+          depends_on: [],
+          plan_md: 'Plan could not be parsed automatically.',
+          files_to_touch: [],
+          branch_slug: 'task',
+          change_type: 'chore' as const,
+          commit_title: 'chore: multi-repo task',
+          commit_body: description,
+        })),
+        confidence: 0.3,
+        clarifying_questions: ['Unable to parse multi-repo plan — please review manually.'],
+      }
+    }
+  })()
+
+  // Validate: every subplan's repo_id is one we asked about; depends_on references valid repo_ids; no cycles.
+  const knownIds = new Set(repos.map((r) => r.repo_id))
+  for (const sub of parsed.repos) {
+    if (!knownIds.has(sub.repo_id)) {
+      throw new Error(`planner returned unknown repo_id ${sub.repo_id}`)
+    }
+    for (const dep of sub.depends_on) {
+      if (!knownIds.has(dep)) {
+        throw new Error(`planner: repo ${sub.repo_id} depends_on unknown repo_id ${dep}`)
+      }
+      if (dep === sub.repo_id) {
+        throw new Error(`planner: repo ${sub.repo_id} cannot depend on itself`)
+      }
+    }
+  }
+  // Cycle detection (Kahn-style).
+  const inDegree = new Map<number, number>()
+  parsed.repos.forEach((s) => inDegree.set(s.repo_id, s.depends_on.length))
+  const queue = [...inDegree.entries()].filter(([, d]) => d === 0).map(([id]) => id)
+  let visited = 0
+  while (queue.length) {
+    const id = queue.shift()!
+    visited += 1
+    for (const sub of parsed.repos) {
+      if (sub.depends_on.includes(id)) {
+        const d = (inDegree.get(sub.repo_id) ?? 0) - 1
+        inDegree.set(sub.repo_id, d)
+        if (d === 0) queue.push(sub.repo_id)
+      }
+    }
+  }
+  if (visited !== parsed.repos.length) {
+    throw new Error('planner: depends_on contains a cycle')
+  }
+
+  return { ...parsed, usage: usageFromResult(r) }
+}
+
 const revisionPlanSchema = z.object({
   plan_md: z.string(),
   confidence: z.number().min(0).max(1),
