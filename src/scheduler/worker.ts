@@ -28,5 +28,12 @@ export async function runWorkerTick(userId: string): Promise<void> {
   runTask(next.id, userId).finally(() => {
     isRunning = false
     setCurrentTask(null)
+    // Drain: if more tasks were enqueued while this one ran, the API call that
+    // enqueued them returned early (isRunning was still true). Self-trigger so
+    // the next queued task starts immediately instead of waiting for the
+    // 2-minute safety-net tick.
+    runWorkerTick(userId).catch((err) => {
+      log.error({ err, userId }, 'worker: follow-up tick failed')
+    })
   })
 }
