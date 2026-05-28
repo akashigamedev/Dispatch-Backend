@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { requireAuth } from '../auth.js'
 import { db, githubProjects, tasks } from '../../db/index.js'
 import { fetchAssignedIssues, fetchIssueByNodeId, type DiscoveredIssue } from '../../github/projects.js'
@@ -44,6 +44,19 @@ async function getEnabledProjectMap(userId: string): Promise<Map<string, string>
   return new Map(rows.map((r) => [r.nodeId, r.title]))
 }
 
+// Prefer an active task over a terminal one when an issue has multiple task rows
+// (e.g. after a redo). Within each bucket the most-recently enqueued wins.
+const TASK_ACTIVE_RANK_SQL = sql`case ${tasks.status}
+  when 'queued' then 0
+  when 'planning' then 0
+  when 'awaiting_input' then 0
+  when 'coding' then 0
+  when 'verifying' then 0
+  when 'reviewing' then 0
+  when 'pushing' then 0
+  else 1
+end`
+
 async function fetchTaskMap(userId: string, issueNodeIds: string[]): Promise<Map<string, IssueItem['task']>> {
   if (issueNodeIds.length === 0) return new Map()
   const rows = await db
@@ -61,10 +74,12 @@ async function fetchTaskMap(userId: string, issueNodeIds: string[]): Promise<Map
     })
     .from(tasks)
     .where(and(eq(tasks.user_id, userId), inArray(tasks.github_issue_node_id, issueNodeIds)))
+    .orderBy(TASK_ACTIVE_RANK_SQL, desc(tasks.enqueued_at))
 
   const map = new Map<string, IssueItem['task']>()
   for (const r of rows) {
     if (!r.issueNodeId) continue
+    if (map.has(r.issueNodeId)) continue
     map.set(r.issueNodeId, {
       id: r.id,
       status: r.status,

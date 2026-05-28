@@ -1,4 +1,4 @@
-export const QUEUEABLE_STATUSES = new Set(['backlog', 'todo'])
+export const QUEUEABLE_STATUSES = new Set(['backlog', 'todo', 'inprogress'])
 
 export interface ProjectItemNode {
   fieldValueByName?: { name?: string } | null
