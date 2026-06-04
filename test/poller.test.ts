@@ -54,14 +54,14 @@ describe('isQueueable', () => {
   })
 
   it('returns true for queueable statuses (case- and space-insensitive)', () => {
-    const queueable = ['Backlog', 'backlog', 'BACKLOG', 'Todo', 'todo', 'To Do', 'TO DO', 'to  do']
+    const queueable = ['Backlog', 'backlog', 'BACKLOG', 'Todo', 'todo', 'To Do', 'TO DO', 'to  do', 'In Progress', 'in progress']
     for (const status of queueable) {
       expect(isQueueable(makeNode([status]) as never), status).toBe(true)
     }
   })
 
   it('returns false for non-queueable statuses', () => {
-    const nonQueueable = ['In Progress', 'Code Review', 'Internal Review', 'QA Testing', 'Done', 'Completed', 'Cancelled']
+    const nonQueueable = ['Code Review', 'Internal Review', 'QA Testing', 'Done', 'Completed', 'Cancelled']
     for (const status of nonQueueable) {
       expect(isQueueable(makeNode([status]) as never), status).toBe(false)
     }

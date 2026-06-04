@@ -47,6 +47,27 @@ function checkCancel(taskId: number): void {
   if (isCancelRequested(taskId)) throw new CancelError()
 }
 
+async function trySetProjectStatus(
+  taskId: number,
+  projectNodeId: string,
+  issueNodeId: string,
+  statusName: string,
+): Promise<void> {
+  try {
+    const ctx = await getIssueProjectStatus(issueNodeId, projectNodeId)
+    const option = ctx?.options.find((o) => o.name.toLowerCase() === statusName.toLowerCase())
+    if (ctx && option) {
+      await setIssueProjectStatus(projectNodeId, ctx.projectItemId, ctx.statusFieldId, option.id)
+      await addLog(taskId, 'info', `Project status → ${option.name}`)
+    } else {
+      await addLog(taskId, 'warn', `Could not set project status: no "${statusName}" option found`)
+    }
+  } catch (err) {
+    log.warn({ err, taskId }, 'failed to set project status')
+    await addLog(taskId, 'warn', `Could not set project status: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
+  }
+}
+
 type TaskRow = typeof tasks.$inferSelect
 type ProfileRow = typeof profiles.$inferSelect
 type RepoRow = typeof repos.$inferSelect
@@ -74,6 +95,10 @@ async function runRevision(
   let totalCost = 0
 
   await db.update(tasks).set({ status: 'planning', started_at: new Date(), finished_at: null, failure_reason: null }).where(eq(tasks.id, taskId))
+
+  if (task.github_project_node_id && task.github_issue_node_id) {
+    await trySetProjectStatus(taskId, task.github_project_node_id, task.github_issue_node_id, 'In Progress')
+  }
 
   await addLog(taskId, 'info', `Cloning ${repo.full_name} @ ${branchName}`)
   const workdir = await setupRevisionWorkspace(taskId, repo.full_name, branchName)
@@ -201,17 +226,7 @@ async function runRevision(
   }).where(eq(tasks.id, taskId))
 
   if (task.github_project_node_id && task.github_issue_node_id) {
-    try {
-      const ctx = await getIssueProjectStatus(task.github_issue_node_id, task.github_project_node_id)
-      const option = ctx?.options.find((o) => o.name.toLowerCase() === 'code review')
-      if (ctx && option) {
-        await setIssueProjectStatus(task.github_project_node_id, ctx.projectItemId, ctx.statusFieldId, option.id)
-        await addLog(taskId, 'info', `Project status → Code Review`)
-      }
-    } catch (err) {
-      log.warn({ err, taskId }, 'failed to set project status')
-      await addLog(taskId, 'warn', `Could not set project status: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
-    }
+    await trySetProjectStatus(taskId, task.github_project_node_id, task.github_issue_node_id, 'Code Review')
   }
 
   await addLog(taskId, 'info', `Revision done — PR: ${task.pr_url}`)
@@ -277,6 +292,10 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
     // ── 1. Setup ──────────────────────────────────────────────────────────────
     await addLog(taskId, 'info', `Cloning ${repo.full_name}`)
     await db.update(tasks).set({ status: 'planning', started_at: new Date() }).where(eq(tasks.id, taskId))
+
+    if (task.github_project_node_id) {
+      await trySetProjectStatus(taskId, task.github_project_node_id, issueNodeId, 'In Progress')
+    }
 
     workdir = await setupWorkspace(taskId, repo.full_name, repo.base_branch, planningBranch)
     await addLog(taskId, 'info', 'Workspace ready')
@@ -492,28 +511,9 @@ export async function runTask(taskId: number, userId: string): Promise<void> {
       tokens_out: totalOut,
     }).where(eq(tasks.id, taskId))
 
-    try {
-      await closeIssue(repo.full_name, issueNumber)
-      await addLog(taskId, 'info', `Closed issue #${issueNumber}`)
-    } catch (err) {
-      log.warn({ err, taskId }, 'failed to close issue')
-      await addLog(taskId, 'warn', `Could not close issue: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
-    }
-
+    // Issue stays open for human review — the PR's "Closes #N" closes it on merge.
     if (task.github_project_node_id) {
-      try {
-        const ctx = await getIssueProjectStatus(issueNodeId, task.github_project_node_id)
-        const option = ctx?.options.find((o) => o.name.toLowerCase() === 'code review')
-        if (ctx && option) {
-          await setIssueProjectStatus(task.github_project_node_id, ctx.projectItemId, ctx.statusFieldId, option.id)
-          await addLog(taskId, 'info', `Project status → Code Review`)
-        } else {
-          await addLog(taskId, 'warn', `Could not set project status: no "Code Review" option found`)
-        }
-      } catch (err) {
-        log.warn({ err, taskId }, 'failed to set project status')
-        await addLog(taskId, 'warn', `Could not set project status: ${err instanceof Error ? err.message : String(err)}`).catch(() => null)
-      }
+      await trySetProjectStatus(taskId, task.github_project_node_id, issueNodeId, 'Code Review')
     }
 
     await addLog(taskId, 'info', `Done — PR: ${prUrl}`)
