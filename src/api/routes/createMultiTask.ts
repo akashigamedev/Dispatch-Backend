@@ -14,8 +14,8 @@ const createMultiSchema = z.object({
   description: z.string().trim().min(1).max(8000),
   repoIds: z.array(z.number().int()).min(1).max(8),
   projectNodeId: z.string().min(1),
-  size: z.enum(['XS', 'S', 'M', 'L', 'XL']).optional(),
-  priority: z.number().int().optional(),
+  size: z.enum(['XS', 'S', 'M', 'L', 'XL']).nullish(),
+  priority: z.number().int().nullish(),
   start: z.boolean().default(true),
 })
 
