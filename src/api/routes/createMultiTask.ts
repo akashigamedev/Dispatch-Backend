@@ -1,18 +1,25 @@
 import { Router } from 'express'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { requireAuth } from '../auth.js'
 import { db, githubProjects, repos, tasks } from '../../db/index.js'
 import { AppError } from '../../util/errors.js'
 import { runWorkerTick } from '../../scheduler/worker.js'
+import { findOrCreateRepo } from '../../scheduler/poller.js'
 import type { TaskRepoEntry } from '../../types/multiRepo.js'
+import { log } from '../../log.js'
 
 const router = Router()
+
+const repoRefSchema = z.object({
+  repoGithubId: z.number().int(),
+  fullName: z.string().trim().min(1),
+})
 
 const createMultiSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().min(1).max(8000),
-  repoIds: z.array(z.number().int()).min(1).max(8),
+  repos: z.array(repoRefSchema).min(1).max(8),
   projectNodeId: z.string().min(1),
   size: z.enum(['XS', 'S', 'M', 'L', 'XL']).nullish(),
   priority: z.number().int().nullish(),
@@ -23,6 +30,7 @@ router.post('/tasks/createMulti', requireAuth, async (req, res) => {
   const userId = req.user.id
   const parsed = createMultiSchema.safeParse(req.body)
   if (!parsed.success) {
+    log.warn({ body: req.body, issues: parsed.error.flatten() }, 'createMulti validation failed')
     res.status(400).json({ error: parsed.error.flatten() })
     return
   }
@@ -39,35 +47,30 @@ router.post('/tasks/createMulti', requireAuth, async (req, res) => {
     ))
   if (!project) throw new AppError(400, 'project is not enabled for this user')
 
-  // Verify every repoId belongs to this user.
-  const rows = await db
-    .select({ id: repos.id, full_name: repos.full_name, base_branch: repos.base_branch })
-    .from(repos)
-    .where(and(eq(repos.user_id, userId), inArray(repos.id, p.repoIds)))
-  if (rows.length !== p.repoIds.length) {
-    throw new AppError(400, 'one or more repoIds do not belong to this user')
-  }
-
-  // Deduplicate repoIds while preserving the user's chosen ordering.
+  // Deduplicate repos while preserving the user's chosen ordering.
   const seen = new Set<number>()
-  const orderedIds: number[] = []
-  for (const id of p.repoIds) {
-    if (!seen.has(id)) {
-      seen.add(id)
-      orderedIds.push(id)
-    }
-  }
+  const orderedRepos = p.repos.filter((r) => {
+    if (seen.has(r.repoGithubId)) return false
+    seen.add(r.repoGithubId)
+    return true
+  })
 
-  const repoEntries: TaskRepoEntry[] = orderedIds.map((id) => {
-    const r = rows.find((x) => x.id === id)!
-    return {
-      repo_id: id,
-      full_name: r.full_name,
-      base_branch: r.base_branch,
+  const repoEntries: TaskRepoEntry[] = []
+  for (const r of orderedRepos) {
+    const repoId = await findOrCreateRepo(userId, r.fullName, r.repoGithubId)
+    if (!repoId) throw new AppError(500, 'failed to create repo')
+    const [row] = await db
+      .select({ base_branch: repos.base_branch })
+      .from(repos)
+      .where(eq(repos.id, repoId))
+    repoEntries.push({
+      repo_id: repoId,
+      full_name: r.fullName,
+      base_branch: row?.base_branch ?? 'dev',
       depends_on: [],
       status: 'pending' as const,
-    }
-  })
+    })
+  }
 
   const [inserted] = await db
     .insert(tasks)
